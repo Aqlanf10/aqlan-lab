@@ -1,0 +1,65 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="200dp"
+    android:height="200dp"
+    android:viewportWidth="200"
+    android:viewportHeight="200">
+
+    <!-- Golden Orange Tooth Contour Line Art -->
+    <path
+        android:pathData="M 70,25 C 100,10 135,12 165,30 C 185,45 190,75 185,110 C 178,145 155,175 140,185 C 130,192 118,175 110,155 C 105,145 95,150 90,160 C 85,170 78,175 75,170 C 70,160 80,145 80,135 C 80,125 70,120 60,110 C 45,95 40,70 45,50 C 50,35 60,25 70,25 Z"
+        android:fillColor="#00000000"
+        android:strokeColor="#F59E0B"
+        android:strokeWidth="6"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"/>
+
+    <!-- Inner Golden Accent Swirl -->
+    <path
+        android:pathData="M 65,35 C 85,25 115,28 135,42 C 145,48 150,60 148,70"
+        android:fillColor="#00000000"
+        android:strokeColor="#EA580C"
+        android:strokeWidth="4"
+        android:strokeLineCap="round"/>
+
+    <path
+        android:pathData="M 95,158 C 108,178 120,188 135,182 C 150,175 170,145 176,115 C 182,85 175,55 158,38"
+        android:fillColor="#00000000"
+        android:strokeColor="#F59E0B"
+        android:strokeWidth="5"
+        android:strokeLineCap="round"/>
+
+    <!-- Navy Blue Calligraphic 'Aqlan' Ribbon Stroke Outline -->
+    <!-- 'A' and flourish -->
+    <path
+        android:pathData="M 45,115 C 55,95 70,80 85,82 C 95,83 98,92 90,105 C 80,120 65,125 55,122 C 45,118 40,105 48,92 C 55,80 72,72 88,75 C 98,77 102,88 95,102 C 85,122 75,148 68,162 C 65,168 62,165 65,155 C 72,130 85,95 105,92 C 115,90 120,98 116,110 C 110,125 98,135 90,132"
+        android:fillColor="#00000000"
+        android:strokeColor="#1E293B"
+        android:strokeWidth="4.5"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"/>
+
+    <!-- 'qlan' flowing loop and script -->
+    <path
+        android:pathData="M 100,108 C 112,95 125,92 135,98 C 142,103 140,115 130,125 C 122,132 112,130 110,122 C 108,112 118,102 128,105 C 138,108 142,120 145,130 C 148,140 155,142 162,135 C 168,128 172,115 170,102"
+        android:fillColor="#00000000"
+        android:strokeColor="#1E293B"
+        android:strokeWidth="4.5"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"/>
+
+    <path
+        android:pathData="M 125,65 C 135,78 145,105 142,130 C 140,145 152,148 160,138 C 165,130 168,118 168,105"
+        android:fillColor="#00000000"
+        android:strokeColor="#0F172A"
+        android:strokeWidth="4.5"
+        android:strokeLineCap="round"/>
+
+    <!-- Bottom Swirl / Tail of tooth in Golden Amber -->
+    <path
+        android:pathData="M 105,160 C 115,175 128,185 142,175 C 152,165 160,145 165,125"
+        android:fillColor="#00000000"
+        android:strokeColor="#EA580C"
+        android:strokeWidth="4"
+        android:strokeLineCap="round"/>
+
+</vector>

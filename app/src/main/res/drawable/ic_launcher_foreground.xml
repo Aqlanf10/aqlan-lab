@@ -1,0 +1,61 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <group
+        android:scaleX="0.75"
+        android:scaleY="0.75"
+        android:pivotX="54"
+        android:pivotY="54">
+        <!-- Golden Orange Tooth Contour -->
+        <path
+            android:pathData="M 38,18 C 55,8 75,10 90,20 C 100,30 104,50 100,72 C 95,95 82,112 72,118 C 66,122 58,110 54,98 C 50,90 44,95 40,102 C 37,108 32,110 30,105 C 26,98 32,88 32,80 C 32,72 26,68 20,60 C 10,50 8,32 12,20 C 16,10 24,6 38,18 Z"
+            android:fillColor="#00000000"
+            android:strokeColor="#F59E0B"
+            android:strokeWidth="5"
+            android:strokeLineCap="round"
+            android:strokeLineJoin="round"/>
+
+        <!-- Top Swirl Accent -->
+        <path
+            android:pathData="M 35,22 C 48,15 68,16 80,25"
+            android:fillColor="#00000000"
+            android:strokeColor="#EA580C"
+            android:strokeWidth="3.5"
+            android:strokeLineCap="round"/>
+
+        <!-- Calligraphic 'Aqlan' Script in Dark Navy Blue -->
+        <path
+            android:pathData="M 22,68 C 28,55 38,45 46,47 C 52,48 54,54 48,62 C 42,70 34,74 28,72 C 22,70 20,62 24,55 C 28,48 38,42 48,44 C 54,46 56,52 52,60 C 46,72 40,88 36,96 C 34,100 32,98 34,92 C 38,78 46,58 56,55 C 62,54 66,58 64,65 C 60,74 54,80 48,78"
+            android:fillColor="#00000000"
+            android:strokeColor="#0F172A"
+            android:strokeWidth="4"
+            android:strokeLineCap="round"
+            android:strokeLineJoin="round"/>
+
+        <path
+            android:pathData="M 54,64 C 62,55 70,54 76,58 C 80,61 78,68 72,74 C 68,78 62,76 60,72 C 58,66 64,60 70,62 C 76,64 78,70 80,76 C 82,82 86,84 90,80 C 94,76 96,68 94,60"
+            android:fillColor="#00000000"
+            android:strokeColor="#0F172A"
+            android:strokeWidth="4"
+            android:strokeLineCap="round"
+            android:strokeLineJoin="round"/>
+
+        <path
+            android:pathData="M 68,38 C 74,46 80,62 78,76 C 76,86 84,88 88,82 C 92,76 94,70 94,62"
+            android:fillColor="#00000000"
+            android:strokeColor="#0F172A"
+            android:strokeWidth="4"
+            android:strokeLineCap="round"/>
+
+        <!-- Bottom Root Swirl -->
+        <path
+            android:pathData="M 58,95 C 64,105 72,110 80,105 C 86,100 90,88 94,74"
+            android:fillColor="#00000000"
+            android:strokeColor="#EA580C"
+            android:strokeWidth="3.5"
+            android:strokeLineCap="round"/>
+    </group>
+</vector>

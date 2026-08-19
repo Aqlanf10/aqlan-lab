@@ -1,0 +1,6 @@
+{
+  "name": "إدارة المعامل - د. عقلان الكامل",
+  "description": "برنامج إدارة معامل الأسنان - مركز الدكتور عقلان الكامل لتقويم وزراعة وتجميل الأسنان. متابعة الإرساليات، الحسابات، التقارير، والنسخ الاحتياطي السحابي.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
