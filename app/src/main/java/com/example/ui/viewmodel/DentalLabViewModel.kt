@@ -180,17 +180,25 @@ class DentalLabViewModel(application: Application) : AndroidViewModel(applicatio
     PinSecurity.validatePinStrength(pin)?.let { return it }
     if (allUsers.value.isNotEmpty()) return "تم إعداد التطبيق مسبقاً"
 
-    val admin = User(
-      username = "admin",
-      fullName = fullName.trim(),
-      role = UserRole.ADMIN,
-      pinHash = PinSecurity.hash(pin),
-      avatarColor = 0xFFD32F2F
-    )
-    withContext(Dispatchers.IO) { repository.insertUser(admin, admin) }
-    _activeUser.value = admin
-    _isAppLocked.value = false
-    return null
+    // كل هذه الخطوة محاطة بمعالجة أخطاء: أي استثناء هنا (تجزئة، قاعدة بيانات،
+    // مساحة تخزين) كان سيُغلق التطبيق فجأة عند الضغط على «حفظ» دون أن يعرف
+    // المستخدم السبب. الآن يظهر الخطأ في الشاشة ويبقى التطبيق يعمل.
+    return try {
+      val admin = User(
+        username = "admin",
+        fullName = fullName.trim(),
+        role = UserRole.ADMIN,
+        pinHash = PinSecurity.hash(pin),
+        avatarColor = 0xFFD32F2F
+      )
+      withContext(Dispatchers.IO) { repository.insertUser(admin, admin) }
+      _activeUser.value = admin
+      _isAppLocked.value = false
+      null
+    } catch (e: Exception) {
+      android.util.Log.e("DentalLabViewModel", "Initial setup failed", e)
+      "تعذر إكمال الإعداد: ${e.localizedMessage ?: e.javaClass.simpleName}"
+    }
   }
 
   /**
@@ -202,7 +210,7 @@ class DentalLabViewModel(application: Application) : AndroidViewModel(applicatio
    *  - أصبحت المقارنة على التجزئة (PBKDF2) لا على النص الصريح.
    *  - أُضيف حظر تصاعدي بعد المحاولات الفاشلة لمنع تخمين رمز من 4 أرقام.
    */
-  fun unlockAppWithPin(pin: String): Boolean {
+  suspend fun unlockAppWithPin(pin: String): Boolean {
     val remaining = remainingLockoutSeconds()
     if (remaining > 0) {
       _lockoutRemainingSeconds.value = remaining
@@ -211,7 +219,16 @@ class DentalLabViewModel(application: Application) : AndroidViewModel(applicatio
     }
 
     val entered = pin.trim()
-    val matchingUser = allUsers.value.firstOrNull { PinSecurity.verify(entered, it.pinHash) }
+    // `PinSecurity.verify` دالة suspend تنفّذ الاشتقاق خارج الخيط الرئيسي.
+    // المرور على المستخدمين يتم هنا وليس داخل مُرشِّح متزامن، لأن الاشتقاق
+    // لكل مستخدم كان سيُنفَّذ على خيط الواجهة ويتسبب في تجمّد التطبيق.
+    var matchingUser: User? = null
+    for (candidate in allUsers.value) {
+      if (PinSecurity.verify(entered, candidate.pinHash)) {
+        matchingUser = candidate
+        break
+      }
+    }
 
     if (matchingUser == null) {
       registerFailedAttempt()
@@ -396,7 +413,7 @@ class DentalLabViewModel(application: Application) : AndroidViewModel(applicatio
       return
     }
 
-    viewModelScope.launch {
+    viewModelScope.launch(Dispatchers.IO) {
       val result = firebaseAuthManager.registerStaffWithEmail(email, pass, fullName, role)
       if (result.isSuccess) {
         val newUser = User(
@@ -405,10 +422,12 @@ class DentalLabViewModel(application: Application) : AndroidViewModel(applicatio
           role = role,
           pinHash = PinSecurity.hash(initialPin)
         )
-        withContext(Dispatchers.IO) { repository.insertUser(newUser, _activeUser.value) }
-        onResult(true, "تم إنشاء حساب الموظف بنجاح")
+        repository.insertUser(newUser, _activeUser.value)
+        withContext(Dispatchers.Main) { onResult(true, "تم إنشاء حساب الموظف بنجاح") }
       } else {
-        onResult(false, result.exceptionOrNull()?.localizedMessage ?: "تعذر إنشاء حساب الموظف")
+        withContext(Dispatchers.Main) {
+          onResult(false, result.exceptionOrNull()?.localizedMessage ?: "تعذر إنشاء حساب الموظف")
+        }
       }
     }
   }
@@ -1148,17 +1167,16 @@ class DentalLabViewModel(application: Application) : AndroidViewModel(applicatio
       return
     }
 
-    val updated = if (newPin.isBlank()) {
-      user
-    } else {
+    if (newPin.isNotBlank()) {
       PinSecurity.validatePinStrength(newPin)?.let {
         onComplete(false, it)
         return
       }
-      user.copy(pinHash = PinSecurity.hash(newPin))
     }
 
     viewModelScope.launch(Dispatchers.IO) {
+      // التجزئة تتم داخل الكوروتين وليس على خيط الواجهة.
+      val updated = if (newPin.isBlank()) user else user.copy(pinHash = PinSecurity.hash(newPin))
       repository.updateUser(updated, _activeUser.value)
       if (_activeUser.value.id == updated.id) _activeUser.value = updated
       launch(Dispatchers.Main) { onComplete(true, "تم حفظ بيانات المستخدم") }
@@ -1198,13 +1216,13 @@ class DentalLabViewModel(application: Application) : AndroidViewModel(applicatio
    * التحقق من رمز مرور مستخدم معيّن (يُستخدم عند تبديل الحساب).
    * أُزيل الباب الخلفي الذي كان يقبل "1234" لأي مستخدم بما فيهم مدير النظام.
    */
-  fun verifyPin(user: User, enteredPin: String): Boolean =
+  suspend fun verifyPin(user: User, enteredPin: String): Boolean =
     PinSecurity.verify(enteredPin, user.pinHash)
 
   /**
    * تبديل الحساب النشط بعد التحقق من رمز المرور. لا تبديل بدون تحقق.
    */
-  fun switchUserWithPin(user: User, enteredPin: String): Boolean {
+  suspend fun switchUserWithPin(user: User, enteredPin: String): Boolean {
     if (!verifyPin(user, enteredPin)) return false
     _activeUser.value = user
     return true

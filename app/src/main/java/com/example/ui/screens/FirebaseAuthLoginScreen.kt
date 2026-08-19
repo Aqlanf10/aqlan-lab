@@ -76,8 +76,38 @@ fun FirebaseAuthLoginScreen(
   // Quick Doctor PIN State
   var doctorPinInput by remember { mutableStateOf("") }
 
+  var isCheckingPin by remember { mutableStateOf(false) }
+
   val biometricEnabled by viewModel.biometricUnlockEnabled.collectAsState()
   val biometricAvailable = remember { BiometricAuthenticator.isAvailable(context) }
+
+  /**
+   * التحقق من رمز المرور يجري في كوروتين وليس على خيط الواجهة: اشتقاق PBKDF2
+   * مكلف عمداً، وتنفيذه على الخيط الرئيسي كان يجمّد التطبيق حتى يغلقه النظام.
+   */
+  fun submitDoctorPin() {
+    if (isCheckingPin) return
+    val enteredPin = doctorPinInput
+    if (enteredPin.isBlank()) {
+      Toast.makeText(context, "يرجى إدخال رمز المرور", Toast.LENGTH_SHORT).show()
+      return
+    }
+    isCheckingPin = true
+    doctorPinInput = ""
+    coroutineScope.launch {
+      val unlocked = viewModel.unlockAppWithPin(enteredPin)
+      isCheckingPin = false
+      if (unlocked) {
+        onLoginSuccess()
+      } else {
+        Toast.makeText(
+          context,
+          viewModel.unlockError.value.ifBlank { "رمز المرور غير صحيح" },
+          Toast.LENGTH_LONG
+        ).show()
+      }
+    }
+  }
 
   // Forgot Password Dialog State
   var showForgotPasswordDialog by remember { mutableStateOf(false) }
@@ -463,17 +493,7 @@ fun FirebaseAuthLoginScreen(
                 ),
                 keyboardActions = KeyboardActions(onDone = {
                   focusManager.clearFocus()
-                  if (viewModel.unlockAppWithPin(doctorPinInput)) {
-                    doctorPinInput = ""
-                    onLoginSuccess()
-                  } else {
-                    doctorPinInput = ""
-                    Toast.makeText(
-                      context,
-                      viewModel.unlockError.value.ifBlank { "رمز المرور غير صحيح" },
-                      Toast.LENGTH_LONG
-                    ).show()
-                  }
+                  submitDoctorPin()
                 }),
                 colors = OutlinedTextFieldDefaults.colors(
                   focusedBorderColor = Color(0xFFF59E0B),
@@ -489,25 +509,20 @@ fun FirebaseAuthLoginScreen(
               Button(
                 onClick = {
                   focusManager.clearFocus()
-                  if (viewModel.unlockAppWithPin(doctorPinInput)) {
-                    doctorPinInput = ""
-                    onLoginSuccess()
-                  } else {
-                    doctorPinInput = ""
-                    Toast.makeText(
-                      context,
-                      viewModel.unlockError.value.ifBlank { "رمز المرور غير صحيح" },
-                      Toast.LENGTH_LONG
-                    ).show()
-                  }
+                  submitDoctorPin()
                 },
+                enabled = !isCheckingPin,
                 colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFD97706)),
                 shape = RoundedCornerShape(10.dp),
                 modifier = Modifier.fillMaxWidth().height(48.dp).testTag("doctor_pin_btn")
               ) {
-                Icon(Icons.Default.Check, contentDescription = null, modifier = Modifier.size(18.dp))
-                Spacer(Modifier.width(8.dp))
-                Text("فتح النظام كطبيب مسؤول", fontWeight = FontWeight.Bold)
+                if (isCheckingPin) {
+                  CircularProgressIndicator(color = Color.White, modifier = Modifier.size(20.dp))
+                } else {
+                  Icon(Icons.Default.Check, contentDescription = null, modifier = Modifier.size(18.dp))
+                  Spacer(Modifier.width(8.dp))
+                  Text("فتح النظام كطبيب مسؤول", fontWeight = FontWeight.Bold)
+                }
               }
 
               // --- الدخول بالبصمة ---

@@ -697,13 +697,16 @@ fun SettingsScreen(
         confirmButton = {
           Button(
             onClick = {
-              if (viewModel.verifyPin(activeUser, enteredPin)) {
-                viewModel.wipeAllTransactions {
-                  showWipeTransactionsConfirm = false
-                  snackbarMessage = "تم تصفير جميع الإرساليات والمدفوعات بنجاح"
+              val entered = enteredPin
+              settingsScope.launch {
+                if (viewModel.verifyPin(activeUser, entered)) {
+                  viewModel.wipeAllTransactions {
+                    showWipeTransactionsConfirm = false
+                    snackbarMessage = "تم تصفير جميع الإرساليات والمدفوعات بنجاح"
+                  }
+                } else {
+                  pinError = "كلمة المرور غير صحيحة"
                 }
-              } else {
-                pinError = "كلمة المرور غير صحيحة"
               }
             },
             colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
@@ -764,13 +767,16 @@ fun SettingsScreen(
         confirmButton = {
           Button(
             onClick = {
-              if (viewModel.verifyPin(activeUser, enteredPin)) {
-                viewModel.factoryResetApp {
-                  showFactoryResetConfirm = false
-                  snackbarMessage = "تمت إعادة ضبط المصنع بنجاح"
+              val entered = enteredPin
+              settingsScope.launch {
+                if (viewModel.verifyPin(activeUser, entered)) {
+                  viewModel.factoryResetApp {
+                    showFactoryResetConfirm = false
+                    snackbarMessage = "تمت إعادة ضبط المصنع بنجاح"
+                  }
+                } else {
+                  pinError = "كلمة المرور غير صحيحة"
                 }
-              } else {
-                pinError = "كلمة المرور غير صحيحة"
               }
             },
             colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
@@ -1010,6 +1016,8 @@ fun UserSwitchDialog(
   var selectedUserToAuth by remember { mutableStateOf<User?>(null) }
   var pinInput by remember { mutableStateOf("") }
   var isPinError by remember { mutableStateOf(false) }
+  var isVerifying by remember { mutableStateOf(false) }
+  val switchScope = androidx.compose.runtime.rememberCoroutineScope()
 
   if (selectedUserToAuth != null) {
     val targetUser = selectedUserToAuth!!
@@ -1056,12 +1064,23 @@ fun UserSwitchDialog(
             // أُزيل الباب الخلفي: كان الشرط يقبل الرمز "1234" لأي مستخدم،
             // أي أن أي موظف يعرف هذا الرقم كان يستطيع التبديل إلى حساب مدير
             // النظام والوصول إلى المالية وإدارة المستخدمين والنسخ السحابي.
-            if (viewModel.switchUserWithPin(targetUser, pinInput)) {
-              pinInput = ""
-              selectedUserToAuth = null
-              onDismiss()
-            } else {
-              isPinError = true
+            //
+            // التحقق يجري في كوروتين: اشتقاق PBKDF2 على خيط الواجهة كان يجمّد
+            // التطبيق.
+            if (!isVerifying) {
+              isVerifying = true
+              val entered = pinInput
+              switchScope.launch {
+                val ok = viewModel.switchUserWithPin(targetUser, entered)
+                isVerifying = false
+                if (ok) {
+                  pinInput = ""
+                  selectedUserToAuth = null
+                  onDismiss()
+                } else {
+                  isPinError = true
+                }
+              }
             }
           }
         ) {
