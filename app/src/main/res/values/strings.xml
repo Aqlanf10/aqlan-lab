@@ -1,3 +1,10 @@
 <resources>
     <string name="app_name">د. عقلان الكامل</string>
+
+    <!--
+      معرّف عميل الويب (Web client ID) من مشروع Firebase الخاص بالمركز.
+      يُنسخ من: Firebase Console ← Authentication ← Sign-in method ← Google ← Web SDK configuration.
+      تركه فارغاً يُعطّل زر «تسجيل الدخول عبر Google» برسالة واضحة بدل الفشل الغامض.
+    -->
+    <string name="google_web_client_id" translatable="false"></string>
 </resources>

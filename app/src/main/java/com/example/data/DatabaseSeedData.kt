@@ -1,12 +1,22 @@
 package com.example.data
 
 import com.example.data.models.*
+import com.example.security.PinSecurity
 
 object DatabaseSeedData {
-  val defaultUsers = listOf(
-    User(id = 1, username = "aqlan", fullName = "د. عقلان الكامل", role = UserRole.ADMIN, pinCode = "1111", avatarColor = 0xFFD32F2F),
-    User(id = 2, username = "staff1", fullName = "مروة العريقي", role = UserRole.STAFF, pinCode = "2222", avatarColor = 0xFF1976D2),
-    User(id = 3, username = "accountant1", fullName = "عمر باحميد", role = UserRole.ACCOUNTANT, pinCode = "3333", avatarColor = 0xFF388E3C)
+  /**
+   * مستخدمو العرض التجريبي فقط — لا يُبذرون تلقائياً عند أول تشغيل.
+   *
+   * سابقاً كان التطبيق يُنشئ ثلاثة حسابات برموز مرور ثابتة (1111 / 2222 / 3333)
+   * معروضة على شاشة الدخول نفسها. الآن يُطلب من المالك تعيين رمز مرور المدير
+   * عند أول تشغيل، ولا توجد رموز مرور افتراضية في التطبيق إطلاقاً.
+   *
+   * رموز المرور هنا مُجزّأة عند الإنشاء (انظر `demoUsers()`).
+   */
+  fun demoUsers(): List<User> = listOf(
+    User(id = 1, username = "aqlan", fullName = "د. عقلان الكامل", role = UserRole.ADMIN, pinHash = PinSecurity.hash("284615"), avatarColor = 0xFFD32F2F),
+    User(id = 2, username = "staff1", fullName = "مروة العريقي", role = UserRole.STAFF, pinHash = PinSecurity.hash("507392"), avatarColor = 0xFF1976D2),
+    User(id = 3, username = "accountant1", fullName = "عمر باحميد", role = UserRole.ACCOUNTANT, pinHash = PinSecurity.hash("638174"), avatarColor = 0xFF388E3C)
   )
 
   val defaultLabs = listOf(

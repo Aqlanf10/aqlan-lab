@@ -34,6 +34,7 @@ import com.example.ui.theme.RoleAdminColor
 import com.example.ui.theme.RoleStaffColor
 import com.example.ui.theme.RoleAccountantColor
 import com.example.ui.viewmodel.DentalLabViewModel
+import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -50,6 +51,7 @@ fun SettingsScreen(
   modifier: Modifier = Modifier
 ) {
   val context = LocalContext.current
+  val settingsScope = androidx.compose.runtime.rememberCoroutineScope()
   val clipboardManager = LocalClipboardManager.current
   val isOnline by viewModel.isOnline.collectAsState()
   val syncState by viewModel.syncState.collectAsState()
@@ -944,14 +946,20 @@ fun SettingsScreen(
         confirmButton = {
           Button(
             onClick = {
-              if (newDoctorPin.length < 4) {
-                changePinError = "يجب أن يتكون رمز المرور من 4 أرقام على الأقل"
-              } else if (newDoctorPin != confirmDoctorPin) {
-                changePinError = "رمزي المرور غير متطابقين!"
-              } else {
-                viewModel.changeDoctorMasterPin(newDoctorPin)
-                showChangePinDialog = false
-                android.widget.Toast.makeText(context, "تم تحديث رمز مرور الطبيب بنجاح", android.widget.Toast.LENGTH_SHORT).show()
+              // التحقق من قوة الرمز والحفظ الدائم يتمان الآن داخل الـ ViewModel:
+              // سابقاً كان الرمز الجديد يُحفظ في متغير بالذاكرة فقط ويعود القديم
+              // عند إعادة تشغيل التطبيق، بينما يظل الباب الخلفي "1111" يعمل.
+              settingsScope.launch {
+                val error = viewModel.changeDoctorMasterPin(newDoctorPin, confirmDoctorPin)
+                if (error == null) {
+                  showChangePinDialog = false
+                  newDoctorPin = ""
+                  confirmDoctorPin = ""
+                  changePinError = ""
+                  android.widget.Toast.makeText(context, "تم تحديث رمز المرور بنجاح", android.widget.Toast.LENGTH_SHORT).show()
+                } else {
+                  changePinError = error
+                }
               }
             }
           ) {
@@ -996,7 +1004,7 @@ fun SettingsMenuItem(
 fun UserSwitchDialog(
   users: List<User>,
   activeUser: User,
-  onUserSelected: (User) -> Unit,
+  viewModel: DentalLabViewModel,
   onDismiss: () -> Unit
 ) {
   var selectedUserToAuth by remember { mutableStateOf<User?>(null) }
@@ -1045,8 +1053,11 @@ fun UserSwitchDialog(
       confirmButton = {
         Button(
           onClick = {
-            if (targetUser.pinCode.trim() == pinInput.trim() || pinInput.trim() == "1234") {
-              onUserSelected(targetUser)
+            // أُزيل الباب الخلفي: كان الشرط يقبل الرمز "1234" لأي مستخدم،
+            // أي أن أي موظف يعرف هذا الرقم كان يستطيع التبديل إلى حساب مدير
+            // النظام والوصول إلى المالية وإدارة المستخدمين والنسخ السحابي.
+            if (viewModel.switchUserWithPin(targetUser, pinInput)) {
+              pinInput = ""
               selectedUserToAuth = null
               onDismiss()
             } else {

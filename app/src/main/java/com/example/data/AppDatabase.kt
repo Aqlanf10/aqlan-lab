@@ -5,12 +5,9 @@ import androidx.room.Database
 import androidx.room.Room
 import androidx.room.RoomDatabase
 import androidx.room.TypeConverters
-import androidx.sqlite.db.SupportSQLiteDatabase
 import com.example.data.dao.*
 import com.example.data.models.*
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.launch
 
 @Database(
   entities = [
@@ -26,7 +23,7 @@ import kotlinx.coroutines.launch
     InventoryTransaction::class
   ],
   version = 3,
-  exportSchema = false
+  exportSchema = true
 )
 @TypeConverters(Converters::class)
 abstract class AppDatabase : RoomDatabase() {
@@ -46,41 +43,21 @@ abstract class AppDatabase : RoomDatabase() {
 
     fun getDatabase(context: Context, scope: CoroutineScope): AppDatabase {
       return INSTANCE ?: synchronized(this) {
-        val instance = Room.databaseBuilder(
+        INSTANCE ?: Room.databaseBuilder(
           context.applicationContext,
           AppDatabase::class.java,
           "dental_lab_database.db"
         )
-        .fallbackToDestructiveMigration()
-        .build()
-        INSTANCE = instance
-        instance
-      }
-    }
-
-    private class DatabaseCallback(
-      private val scope: CoroutineScope
-    ) : RoomDatabase.Callback() {
-      override fun onCreate(db: SupportSQLiteDatabase) {
-        super.onCreate(db)
-        INSTANCE?.let { database ->
-          scope.launch(Dispatchers.IO) {
-            populateDatabase(database)
-          }
-        }
-      }
-
-      suspend fun populateDatabase(database: AppDatabase) {
-        database.userDao().insertAll(DatabaseSeedData.defaultUsers)
-        database.labDao().insertAll(DatabaseSeedData.defaultLabs)
-        database.workTypeDao().insertAll(DatabaseSeedData.defaultWorkTypes)
-        database.labPriceDao().insertAll(DatabaseSeedData.defaultLabPrices)
-        database.shipmentDao().insertAll(DatabaseSeedData.defaultShipments)
-        database.paymentDao().insertAll(DatabaseSeedData.defaultPayments)
-        database.auditLogDao().insertAll(DatabaseSeedData.defaultAuditLogs)
-        for (setting in DatabaseSeedData.defaultSettings) {
-          database.settingDao().setSetting(setting)
-        }
+          // ملاحظة أمان بيانات مهمة:
+          // كان هنا سابقاً `fallbackToDestructiveMigration()` وهو يعني أن أي زيادة
+          // في رقم إصدار قاعدة البيانات تمسح كامل بيانات المركز (الإرساليات،
+          // المدفوعات، حسابات المعامل، المخزون) بصمت ودون أي تحذير للمستخدم.
+          // أُزيل عمداً: أي إصدار جديد يجب أن يأتي بهجرة `Migration` صريحة في
+          // `DatabaseMigrations.ALL`. تصدير المخطط مفعّل (exportSchema = true)
+          // ليتمكن Room من التحقق من صحة الهجرات وقت البناء.
+          .addMigrations(*DatabaseMigrations.ALL)
+          .build()
+          .also { INSTANCE = it }
       }
     }
   }

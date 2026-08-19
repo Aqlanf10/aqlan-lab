@@ -16,3 +16,11 @@
 local.properties
 .env
 debug.keystore
+
+# مخرجات البناء وملفات التوقيع — لا تُرفع إلى المستودع أبداً
+*.apk
+*.aab
+*.jks
+*.keystore
+/firebase/google-services.json
+app/google-services.json

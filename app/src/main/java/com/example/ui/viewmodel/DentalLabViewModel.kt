@@ -8,6 +8,8 @@ import com.example.data.models.*
 import com.example.data.repository.DentalLabRepository
 import com.example.network.*
 import com.example.ui.components.DateUtils
+import com.example.security.AppPreferences
+import com.example.security.PinSecurity
 import com.example.util.NotificationHelper
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.*
@@ -65,6 +67,26 @@ enum class ReportPeriod(val titleAr: String) {
 }
 
 class DentalLabViewModel(application: Application) : AndroidViewModel(application) {
+
+  companion object {
+    /** عدد المحاولات الخاطئة قبل بدء التعطيل المؤقت. */
+    private const val MAX_FAILED_ATTEMPTS_BEFORE_LOCKOUT = 5
+    private const val LOCKOUT_BASE_SECONDS = 30L
+    private const val LOCKOUT_MAX_SECONDS = 600L
+
+    /**
+     * مستخدم غير مصادَق عليه — بلا صلاحيات ولا رمز مرور صالح.
+     * سابقاً كان المستخدم الافتراضي هو حساب المدير كامل الصلاحيات حتى قبل الدخول.
+     */
+    private val GUEST_USER = User(
+      id = 0L,
+      username = "guest",
+      fullName = "غير مسجل",
+      role = UserRole.STAFF,
+      pinHash = ""
+    )
+  }
+
   private val database = AppDatabase.getDatabase(application, viewModelScope)
   private val repository = DentalLabRepository(database)
   val networkMonitor = NetworkMonitor(application)
@@ -83,8 +105,7 @@ class DentalLabViewModel(application: Application) : AndroidViewModel(applicatio
   val availableSnapshots: StateFlow<List<FirestoreBackupSnapshot>> = cloudSyncManager.availableSnapshots
   val autoSyncEnabled: StateFlow<Boolean> = cloudSyncManager.autoSyncEnabled
   val currentUserEmail: StateFlow<String?> = cloudSyncManager.currentUserEmail
-  val cloudServerUrl: StateFlow<String> = cloudSyncManager.cloudServerUrl
-  val apiKey: StateFlow<String> = cloudSyncManager.apiKey
+  val isCloudConfigured: Boolean get() = cloudSyncManager.isCloudConfigured()
 
   // Firebase Storage Streams
   val storageBackupState: StateFlow<SyncState> = firebaseStorageBackupManager.backupState
@@ -100,11 +121,19 @@ class DentalLabViewModel(application: Application) : AndroidViewModel(applicatio
   val firebaseCurrentUser: StateFlow<com.google.firebase.auth.FirebaseUser?> = firebaseAuthManager.currentUser
   val isFirebaseAuthorized: StateFlow<Boolean> = firebaseAuthManager.isAuthorized
 
+  private val prefs = AppPreferences(application)
+
   init {
     viewModelScope.launch(Dispatchers.IO) {
-      repository.checkAndSeedInitialData()
-      cloudSyncManager.fetchAvailableSnapshots()
-      firebaseStorageBackupManager.fetchAvailableStorageBackups(clinicId.value)
+      if (repository.seedReferenceDataIfNeeded(prefs.demoDataSeeded)) {
+        prefs.demoDataSeeded = true
+      }
+      // لا تُستدعى خدمات السحابة إلا إذا كانت مهيأة فعلياً، حتى لا يظهر للمستخدم
+      // نشاط سحابي وهمي بينما Firebase غير مربوط بالتطبيق أصلاً.
+      if (cloudSyncManager.isCloudConfigured()) {
+        cloudSyncManager.fetchAvailableSnapshots()
+        firebaseStorageBackupManager.fetchAvailableStorageBackups(clinicId.value)
+      }
     }
   }
 
@@ -112,96 +141,203 @@ class DentalLabViewModel(application: Application) : AndroidViewModel(applicatio
   val allUsers: StateFlow<List<User>> = repository.allUsers
     .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
 
-  private val _activeUser = MutableStateFlow<User>(
-    User(id = 1, username = "aqlan", fullName = "د. عقلان الكامل", role = UserRole.ADMIN, pinCode = "1111", avatarColor = 0xFFD32F2F)
-  )
+  private val _activeUser = MutableStateFlow(GUEST_USER)
   val activeUser: StateFlow<User> = _activeUser.asStateFlow()
 
   // --- Exclusive Security & App Lock State ---
   private val _isAppLocked = MutableStateFlow(true)
   val isAppLocked: StateFlow<Boolean> = _isAppLocked.asStateFlow()
 
-  private val _appLockEnabled = MutableStateFlow(true)
+  private val _appLockEnabled = MutableStateFlow(prefs.appLockEnabled)
   val appLockEnabled: StateFlow<Boolean> = _appLockEnabled.asStateFlow()
 
-  private val _doctorMasterPin = MutableStateFlow("1111")
-  val doctorMasterPin: StateFlow<String> = _doctorMasterPin.asStateFlow()
+  /**
+   * هل يحتاج التطبيق إلى إعداد أولي؟ (لا يوجد أي مستخدم بعد)
+   *
+   * سابقاً كان التطبيق يُنشئ تلقائياً ثلاثة حسابات برموز مرور ثابتة معروفة
+   * (1111 / 2222 / 3333) ويعرض الرمز الافتراضي مكتوباً على شاشة الدخول. الآن
+   * يجب على المالك تعيين رمز مرور المدير بنفسه عند أول تشغيل.
+   */
+  val needsInitialSetup: StateFlow<Boolean> = repository.allUsers
+    .map { it.isEmpty() }
+    .stateIn(viewModelScope, SharingStarted.Eagerly, false)
 
-  fun unlockAppWithPin(pin: String): Boolean {
-    val userList = allUsers.value
-    val matchingUser = userList.find { it.pinCode == pin }
+  private val _unlockError = MutableStateFlow("")
+  val unlockError: StateFlow<String> = _unlockError.asStateFlow()
 
-    return if (pin == _doctorMasterPin.value || pin == "1111" || matchingUser != null) {
-      if (matchingUser != null) {
-        _activeUser.value = matchingUser
-      } else {
-        val adminUser = userList.find { it.role == UserRole.ADMIN } ?: User(id = 1, username = "aqlan", fullName = "د. عقلان الكامل", role = UserRole.ADMIN, pinCode = "1111")
-        _activeUser.value = adminUser
-      }
-      _isAppLocked.value = false
-      true
-    } else {
-      false
-    }
+  private val _lockoutRemainingSeconds = MutableStateFlow(0L)
+  val lockoutRemainingSeconds: StateFlow<Long> = _lockoutRemainingSeconds.asStateFlow()
+
+  private val _biometricUnlockEnabled = MutableStateFlow(prefs.biometricUnlockEnabled)
+  val biometricUnlockEnabled: StateFlow<Boolean> = _biometricUnlockEnabled.asStateFlow()
+
+  /**
+   * إنشاء حساب المدير عند أول تشغيل. يُرجع رسالة خطأ عربية أو null عند النجاح.
+   */
+  suspend fun completeInitialSetup(fullName: String, pin: String, confirmPin: String): String? {
+    if (fullName.isBlank()) return "يرجى إدخال اسم المدير"
+    if (pin.trim() != confirmPin.trim()) return "رمزا المرور غير متطابقين"
+    PinSecurity.validatePinStrength(pin)?.let { return it }
+    if (allUsers.value.isNotEmpty()) return "تم إعداد التطبيق مسبقاً"
+
+    val admin = User(
+      username = "admin",
+      fullName = fullName.trim(),
+      role = UserRole.ADMIN,
+      pinHash = PinSecurity.hash(pin),
+      avatarColor = 0xFFD32F2F
+    )
+    withContext(Dispatchers.IO) { repository.insertUser(admin, admin) }
+    _activeUser.value = admin
+    _isAppLocked.value = false
+    return null
   }
 
-  fun unlockAppWithBiometric(): Boolean {
-    val userList = allUsers.value
-    val adminUser = userList.find { it.role == UserRole.ADMIN } ?: User(id = 1, username = "aqlan", fullName = "د. عقلان الكامل", role = UserRole.ADMIN, pinCode = "1111")
-    _activeUser.value = adminUser
+  /**
+   * فتح التطبيق برمز المرور.
+   *
+   * ما أُصلح هنا:
+   *  - أُزيل الباب الخلفي `pin == "1111"` الذي كان يفتح التطبيق بصلاحيات مدير
+   *    النظام دائماً حتى بعد أن يغيّر الطبيب رمزه.
+   *  - أصبحت المقارنة على التجزئة (PBKDF2) لا على النص الصريح.
+   *  - أُضيف حظر تصاعدي بعد المحاولات الفاشلة لمنع تخمين رمز من 4 أرقام.
+   */
+  fun unlockAppWithPin(pin: String): Boolean {
+    val remaining = remainingLockoutSeconds()
+    if (remaining > 0) {
+      _lockoutRemainingSeconds.value = remaining
+      _unlockError.value = "تم تعطيل الإدخال مؤقتاً بسبب تكرار المحاولات الخاطئة. حاول بعد $remaining ثانية"
+      return false
+    }
+
+    val entered = pin.trim()
+    val matchingUser = allUsers.value.firstOrNull { PinSecurity.verify(entered, it.pinHash) }
+
+    if (matchingUser == null) {
+      registerFailedAttempt()
+      return false
+    }
+
+    // ترقية رموز المرور القديمة المخزنة نصاً صريحاً إلى تجزئة عند أول دخول ناجح.
+    if (PinSecurity.needsUpgrade(matchingUser.pinHash)) {
+      viewModelScope.launch(Dispatchers.IO) {
+        repository.updateUser(matchingUser.copy(pinHash = PinSecurity.hash(entered)), matchingUser)
+      }
+    }
+
+    prefs.failedUnlockAttempts = 0
+    prefs.lockoutUntilMillis = 0L
+    _unlockError.value = ""
+    _lockoutRemainingSeconds.value = 0L
+    _activeUser.value = matchingUser
     _isAppLocked.value = false
     return true
   }
 
+  /**
+   * يُستدعى فقط بعد نجاح التحقق البيومتري الحقيقي من نظام أندرويد
+   * (`BiometricAuthenticator`). الدالة القديمة كانت تُرجع true دائماً بلا أي
+   * تحقق، فكانت ضغطة زر البصمة تفتح التطبيق بصلاحيات كاملة لأي شخص.
+   */
+  fun onBiometricAuthenticated(): Boolean {
+    if (!prefs.biometricUnlockEnabled) {
+      _unlockError.value = "فتح التطبيق بالبصمة غير مفعّل — فعّله من الإعدادات بعد الدخول برمز المرور"
+      return false
+    }
+    val user = allUsers.value.firstOrNull { it.id == prefs.biometricUserId }
+    if (user == null) {
+      _unlockError.value = "الحساب المرتبط بالبصمة لم يعد موجوداً — استخدم رمز المرور"
+      return false
+    }
+    prefs.failedUnlockAttempts = 0
+    prefs.lockoutUntilMillis = 0L
+    _unlockError.value = ""
+    _activeUser.value = user
+    _isAppLocked.value = false
+    return true
+  }
+
+  /** تفعيل/تعطيل فتح التطبيق بالبصمة للمستخدم النشط حالياً. */
+  fun setBiometricUnlockEnabled(enabled: Boolean) {
+    prefs.biometricUnlockEnabled = enabled
+    prefs.biometricUserId = if (enabled) _activeUser.value.id else 0L
+    _biometricUnlockEnabled.value = enabled
+  }
+
+  fun isBiometricUnlockEnabled(): Boolean = prefs.biometricUnlockEnabled
+
+  fun clearUnlockError() {
+    _unlockError.value = ""
+  }
+
+  private fun remainingLockoutSeconds(): Long {
+    val until = prefs.lockoutUntilMillis
+    if (until <= 0L) return 0L
+    val diff = until - System.currentTimeMillis()
+    return if (diff <= 0L) 0L else (diff / 1000L) + 1
+  }
+
+  private fun registerFailedAttempt() {
+    val attempts = prefs.failedUnlockAttempts + 1
+    prefs.failedUnlockAttempts = attempts
+
+    if (attempts >= MAX_FAILED_ATTEMPTS_BEFORE_LOCKOUT) {
+      val penaltyMultiplier = attempts - MAX_FAILED_ATTEMPTS_BEFORE_LOCKOUT + 1
+      val penaltyMillis = (LOCKOUT_BASE_SECONDS * penaltyMultiplier * 1000L)
+        .coerceAtMost(LOCKOUT_MAX_SECONDS * 1000L)
+      prefs.lockoutUntilMillis = System.currentTimeMillis() + penaltyMillis
+      _lockoutRemainingSeconds.value = penaltyMillis / 1000L
+      _unlockError.value =
+        "تم تعطيل الإدخال مؤقتاً بسبب تكرار المحاولات الخاطئة. حاول بعد ${penaltyMillis / 1000L} ثانية"
+    } else {
+      val left = MAX_FAILED_ATTEMPTS_BEFORE_LOCKOUT - attempts
+      _unlockError.value = "رمز المرور غير صحيح — تبقّى $left محاولات قبل التعطيل المؤقت"
+    }
+  }
+
   fun lockApp() {
     _isAppLocked.value = true
+    _activeUser.value = GUEST_USER
   }
 
   fun setAppLockEnabled(enabled: Boolean) {
     _appLockEnabled.value = enabled
+    prefs.appLockEnabled = enabled
   }
 
-  fun changeDoctorMasterPin(newPin: String) {
-    _doctorMasterPin.value = newPin
+  /**
+   * تغيير رمز مرور المدير. يُرجع رسالة خطأ عربية أو null عند النجاح.
+   *
+   * سابقاً كانت الدالة تحفظ الرمز الجديد في متغير بالذاكرة فقط، فيعود الرمز
+   * القديم عند إعادة تشغيل التطبيق — وكان الباب الخلفي "1111" يعمل على أي حال.
+   */
+  suspend fun changeDoctorMasterPin(newPin: String, confirmPin: String): String? {
+    if (newPin.trim() != confirmPin.trim()) return "رمزا المرور غير متطابقين"
+    PinSecurity.validatePinStrength(newPin)?.let { return it }
+
     val adminUser = allUsers.value.find { it.role == UserRole.ADMIN }
-    if (adminUser != null) {
-      updateUser(adminUser.copy(pinCode = newPin))
-    }
+      ?: return "لا يوجد حساب مدير لتغيير رمزه"
+
+    val updated = adminUser.copy(pinHash = PinSecurity.hash(newPin))
+    withContext(Dispatchers.IO) { repository.updateUser(updated, _activeUser.value) }
+    if (_activeUser.value.id == updated.id) _activeUser.value = updated
+    return null
   }
 
+  /**
+   * تسجيل الدخول عبر Firebase.
+   *
+   * ما أُصلح هنا: كانت الصلاحية تُمنح بناءً على أن البريد «يحتوي على aqlan»،
+   * أي أن أي شخص يسجّل بريداً مثل aqlan@anything.com كان يصبح مدير النظام
+   * بصلاحيات كاملة على بيانات المركز. الآن لا يُمنح دور من البريد إطلاقاً —
+   * يجب أن يكون للمستخدم حساب موجود مسبقاً في قاعدة بيانات المركز (يُنشئه
+   * المدير من شاشة إدارة المستخدمين)، وإلا يُرفض الدخول.
+   */
   fun signInWithFirebaseEmail(email: String, pass: String) {
     viewModelScope.launch {
       val result = firebaseAuthManager.signInWithEmail(email, pass)
       if (result.isSuccess) {
-        val fbUser = result.getOrNull()
-        val isOwner = fbUser?.email?.contains("aqlan", ignoreCase = true) == true || fbUser?.email?.equals(com.example.ui.components.ClinicInfo.EMAIL, ignoreCase = true) == true
-        val matchedUser = allUsers.value.find { it.username.equals(email.substringBefore("@"), ignoreCase = true) }
-        _activeUser.value = matchedUser ?: User(
-          id = if (isOwner) 1 else 2,
-          username = fbUser?.email?.substringBefore("@") ?: "user",
-          fullName = if (isOwner) com.example.ui.components.ClinicInfo.DOCTOR_NAME else (fbUser?.displayName ?: "موظف المركز"),
-          role = if (isOwner) UserRole.ADMIN else UserRole.STAFF,
-          pinCode = if (isOwner) "1111" else "2222"
-        )
-        _isAppLocked.value = false
-      }
-    }
-  }
-
-  fun registerFirebaseStaff(email: String, pass: String, fullName: String, role: UserRole) {
-    viewModelScope.launch {
-      val result = firebaseAuthManager.registerStaffWithEmail(email, pass, fullName, role)
-      if (result.isSuccess) {
-        val newUser = User(
-          id = (System.currentTimeMillis() % 10000) + 10,
-          username = email.substringBefore("@"),
-          fullName = fullName,
-          role = role,
-          pinCode = "2222"
-        )
-        repository.insertUser(newUser, _activeUser.value)
-        _activeUser.value = newUser
-        _isAppLocked.value = false
+        bindFirebaseSessionToLocalUser(email)
       }
     }
   }
@@ -210,16 +346,69 @@ class DentalLabViewModel(application: Application) : AndroidViewModel(applicatio
     viewModelScope.launch {
       val result = firebaseAuthManager.signInWithGoogle(context)
       if (result.isSuccess) {
-        val fbUser = result.getOrNull()
-        val isOwner = fbUser?.email?.contains("aqlan", ignoreCase = true) == true || fbUser?.email?.equals(com.example.ui.components.ClinicInfo.EMAIL, ignoreCase = true) == true
-        _activeUser.value = User(
-          id = if (isOwner) 1 else 2,
-          username = fbUser?.email?.substringBefore("@") ?: "user",
-          fullName = if (isOwner) com.example.ui.components.ClinicInfo.DOCTOR_NAME else (fbUser?.displayName ?: "موظف المركز"),
-          role = if (isOwner) UserRole.ADMIN else UserRole.STAFF,
-          pinCode = if (isOwner) "1111" else "2222"
+        bindFirebaseSessionToLocalUser(result.getOrNull()?.email ?: "")
+      }
+    }
+  }
+
+  /**
+   * يربط جلسة Firebase الناجحة بحساب محلي معتمد فقط.
+   * لا يُنشئ حساباً جديداً ولا يمنح دور ADMIN تلقائياً.
+   */
+  private fun bindFirebaseSessionToLocalUser(email: String) {
+    val account = email.substringBefore("@").trim()
+    val matchedUser = allUsers.value.find {
+      it.username.equals(account, ignoreCase = true)
+    }
+
+    if (matchedUser == null) {
+      firebaseAuthManager.signOut()
+      _unlockError.value =
+        "هذا الحساب غير مضاف في نظام المركز. يرجى مراجعة مدير النظام لإضافة حسابك من شاشة إدارة المستخدمين."
+      return
+    }
+
+    _unlockError.value = ""
+    _activeUser.value = matchedUser
+    _isAppLocked.value = false
+  }
+
+  /**
+   * إنشاء حساب موظف. متاح لمدير النظام فقط.
+   *
+   * سابقاً كانت شاشة الدخول تسمح لأي شخص بإنشاء حساب لنفسه ثم يدخل مباشرة إلى
+   * بيانات المركز — تسجيل ذاتي مفتوح بلا أي موافقة.
+   */
+  fun registerFirebaseStaff(
+    email: String,
+    pass: String,
+    fullName: String,
+    role: UserRole,
+    initialPin: String,
+    onResult: (Boolean, String) -> Unit = { _, _ -> }
+  ) {
+    if (_activeUser.value.role != UserRole.ADMIN) {
+      onResult(false, "إضافة الموظفين متاحة لمدير النظام فقط")
+      return
+    }
+    PinSecurity.validatePinStrength(initialPin)?.let {
+      onResult(false, it)
+      return
+    }
+
+    viewModelScope.launch {
+      val result = firebaseAuthManager.registerStaffWithEmail(email, pass, fullName, role)
+      if (result.isSuccess) {
+        val newUser = User(
+          username = email.substringBefore("@"),
+          fullName = fullName,
+          role = role,
+          pinHash = PinSecurity.hash(initialPin)
         )
-        _isAppLocked.value = false
+        withContext(Dispatchers.IO) { repository.insertUser(newUser, _activeUser.value) }
+        onResult(true, "تم إنشاء حساب الموظف بنجاح")
+      } else {
+        onResult(false, result.exceptionOrNull()?.localizedMessage ?: "تعذر إنشاء حساب الموظف")
       }
     }
   }
@@ -233,7 +422,7 @@ class DentalLabViewModel(application: Application) : AndroidViewModel(applicatio
     _isAppLocked.value = true
   }
 
-  private val _currency = MutableStateFlow("SAR") // Default base currency: SAR, YER, USD
+  private val _currency = MutableStateFlow(prefs.baseCurrency) // Default base currency: SAR, YER, USD
   val currency: StateFlow<String> = _currency.asStateFlow()
 
   // --- Multi-Currency & Exchange Rates State ---
@@ -243,11 +432,12 @@ class DentalLabViewModel(application: Application) : AndroidViewModel(applicatio
   private val _selectedCurrencyFilter = MutableStateFlow<AppCurrency?>(null) // null = all currencies
   val selectedCurrencyFilter: StateFlow<AppCurrency?> = _selectedCurrencyFilter.asStateFlow()
 
-  private val _notificationsEnabled = MutableStateFlow(true)
+  private val _notificationsEnabled = MutableStateFlow(prefs.notificationsEnabled)
   val notificationsEnabled: StateFlow<Boolean> = _notificationsEnabled.asStateFlow()
 
   fun setNotificationsEnabled(enabled: Boolean) {
     _notificationsEnabled.value = enabled
+    prefs.notificationsEnabled = enabled
   }
 
   fun setCurrencyFilter(curr: AppCurrency?) {
@@ -518,13 +708,9 @@ class DentalLabViewModel(application: Application) : AndroidViewModel(applicatio
     }
   }.stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
 
-  // --- User Switching ---
-  fun switchUser(user: User) {
-    _activeUser.value = user
-  }
-
   fun setCurrency(code: String) {
     _currency.value = code
+    prefs.baseCurrency = code
     viewModelScope.launch(Dispatchers.IO) {
       repository.setSetting("currency", code)
     }
@@ -898,38 +1084,84 @@ class DentalLabViewModel(application: Application) : AndroidViewModel(applicatio
   fun factoryResetApp(onComplete: () -> Unit = {}) {
     viewModelScope.launch(Dispatchers.IO) {
       repository.factoryResetAll(_activeUser.value)
-      // Reset active user to default Admin
-      _activeUser.value = User(
-        id = 1,
-        username = "admin",
-        fullName = "المدير العام",
-        role = UserRole.ADMIN,
-        pinCode = "1234",
-        avatarColor = 0xFF00687A
-      )
-      launch(Dispatchers.Main) { onComplete() }
+      // بعد التصفير الكامل يُقفل التطبيق ويُطلب الدخول من جديد بدل منح
+      // صلاحيات مدير برمز مرور ثابت معروف ("1234" سابقاً).
+      launch(Dispatchers.Main) {
+        _activeUser.value = GUEST_USER
+        _isAppLocked.value = true
+        onComplete()
+      }
     }
   }
 
   // --- Users Management & Security ---
+  /**
+   * إضافة مستخدم. متاحة لمدير النظام فقط، ورمز المرور يُجزَّأ قبل الحفظ.
+   * سابقاً كان أي رمز فارغ يُستبدل تلقائياً بالرمز الثابت "1234".
+   */
   fun addUser(
     username: String,
     fullName: String,
     role: UserRole,
     pinCode: String,
     avatarColor: Long = 0xFF00687A,
-    onComplete: (Boolean) -> Unit = {}
+    onComplete: (Boolean, String) -> Unit = { _, _ -> }
   ) {
+    if (_activeUser.value.role != UserRole.ADMIN) {
+      onComplete(false, "إضافة المستخدمين متاحة لمدير النظام فقط")
+      return
+    }
+    if (username.isBlank() || fullName.isBlank()) {
+      onComplete(false, "يرجى إدخال اسم المستخدم والاسم الكامل")
+      return
+    }
+    if (allUsers.value.any { it.username.equals(username.trim(), ignoreCase = true) }) {
+      onComplete(false, "اسم المستخدم مستخدم مسبقاً")
+      return
+    }
+    PinSecurity.validatePinStrength(pinCode)?.let {
+      onComplete(false, it)
+      return
+    }
+
     viewModelScope.launch(Dispatchers.IO) {
       val newUser = User(
         username = username.trim(),
         fullName = fullName.trim(),
         role = role,
-        pinCode = pinCode.trim().ifEmpty { "1234" },
+        pinHash = PinSecurity.hash(pinCode),
         avatarColor = avatarColor
       )
       repository.insertUser(newUser, _activeUser.value)
-      launch(Dispatchers.Main) { onComplete(true) }
+      launch(Dispatchers.Main) { onComplete(true, "تم إضافة المستخدم بنجاح") }
+    }
+  }
+
+  /** تحديث بيانات مستخدم مع رمز مرور جديد اختياري (فارغ = إبقاء الرمز الحالي). */
+  fun updateUserWithOptionalPin(
+    user: User,
+    newPin: String,
+    onComplete: (Boolean, String) -> Unit = { _, _ -> }
+  ) {
+    if (_activeUser.value.role != UserRole.ADMIN && _activeUser.value.id != user.id) {
+      onComplete(false, "لا تملك صلاحية تعديل هذا الحساب")
+      return
+    }
+
+    val updated = if (newPin.isBlank()) {
+      user
+    } else {
+      PinSecurity.validatePinStrength(newPin)?.let {
+        onComplete(false, it)
+        return
+      }
+      user.copy(pinHash = PinSecurity.hash(newPin))
+    }
+
+    viewModelScope.launch(Dispatchers.IO) {
+      repository.updateUser(updated, _activeUser.value)
+      if (_activeUser.value.id == updated.id) _activeUser.value = updated
+      launch(Dispatchers.Main) { onComplete(true, "تم حفظ بيانات المستخدم") }
     }
   }
 
@@ -943,15 +1175,39 @@ class DentalLabViewModel(application: Application) : AndroidViewModel(applicatio
     }
   }
 
-  fun deleteUser(user: User, onComplete: () -> Unit = {}) {
+  fun deleteUser(user: User, onComplete: (Boolean, String) -> Unit = { _, _ -> }) {
+    if (_activeUser.value.role != UserRole.ADMIN) {
+      onComplete(false, "حذف المستخدمين متاح لمدير النظام فقط")
+      return
+    }
+    if (user.id == _activeUser.value.id) {
+      onComplete(false, "لا يمكنك حذف حسابك الحالي")
+      return
+    }
+    if (user.role == UserRole.ADMIN && allUsers.value.count { it.role == UserRole.ADMIN } <= 1) {
+      onComplete(false, "لا يمكن حذف آخر حساب مدير في النظام")
+      return
+    }
     viewModelScope.launch(Dispatchers.IO) {
       repository.deleteUser(user, _activeUser.value)
-      launch(Dispatchers.Main) { onComplete() }
+      launch(Dispatchers.Main) { onComplete(true, "تم حذف المستخدم") }
     }
   }
 
-  fun verifyPin(user: User, enteredPin: String): Boolean {
-    return user.pinCode.trim() == enteredPin.trim() || enteredPin.trim() == "1234"
+  /**
+   * التحقق من رمز مرور مستخدم معيّن (يُستخدم عند تبديل الحساب).
+   * أُزيل الباب الخلفي الذي كان يقبل "1234" لأي مستخدم بما فيهم مدير النظام.
+   */
+  fun verifyPin(user: User, enteredPin: String): Boolean =
+    PinSecurity.verify(enteredPin, user.pinHash)
+
+  /**
+   * تبديل الحساب النشط بعد التحقق من رمز المرور. لا تبديل بدون تحقق.
+   */
+  fun switchUserWithPin(user: User, enteredPin: String): Boolean {
+    if (!verifyPin(user, enteredPin)) return false
+    _activeUser.value = user
+    return true
   }
 
   // --- Detailed Statement (مدين / دائن / عدد القطع / الرصيد) ---
@@ -1039,12 +1295,10 @@ class DentalLabViewModel(application: Application) : AndroidViewModel(applicatio
   }
 
   // --- Cloud & Online Operations ---
-  fun updateCloudConfig(url: String, key: String) {
-    cloudSyncManager.updateServerConfig(url, key)
-  }
-
   fun updateClinicConfig(clinicId: String, clinicName: String) {
     cloudSyncManager.updateClinicConfig(clinicId, clinicName)
+    prefs.clinicId = clinicId
+    prefs.clinicName = clinicName
     refreshFirestoreSnapshots()
   }
 
@@ -1148,6 +1402,7 @@ class DentalLabViewModel(application: Application) : AndroidViewModel(applicatio
   fun sendShipmentToWhatsApp(context: Context, shipment: Shipment, lab: Laboratory?) {
     val phone = lab?.phone ?: ""
     val trackingUrl = cloudSyncManager.generateOnlineTrackingUrl(shipment)
+    val trackingLine = if (trackingUrl.isBlank()) "" else "🌐 رابط التتبع: $trackingUrl\n---------------------------------\n"
     val text = """
       🏥 *${com.example.ui.components.ClinicInfo.CLINIC_NAME}*
       📍 ${com.example.ui.components.ClinicInfo.ADDRESS}
@@ -1164,10 +1419,7 @@ class DentalLabViewModel(application: Application) : AndroidViewModel(applicatio
       ⏰ موعد التسليم: ${DateUtils.formatShortDate(shipment.expectedDeliveryDate)}
       💰 التكلفة: ${shipment.totalPrice} ${_currency.value}
       ---------------------------------
-      🌐 *رابط التتبع السحابي المباشر عبر الإنترنت:*
-      $trackingUrl
-      ---------------------------------
-      📞 هاتف للتواصل: ${com.example.ui.components.ClinicInfo.PHONES}
+      $trackingLine📞 هاتف للتواصل: ${com.example.ui.components.ClinicInfo.PHONES}
       ═════════════════════════════════
     """.trimIndent()
     cloudSyncManager.shareViaWhatsApp(context, phone, text)
@@ -1272,7 +1524,7 @@ class DentalLabViewModel(application: Application) : AndroidViewModel(applicatio
     val text = """
       📦 *طلب توريد مواد سنية - طلبية شراء*
       ---------------------------------
-      🏥 المركز: مركز النخبة لطب وتجميل الأسنان
+      🏥 المركز: ${com.example.ui.components.ClinicInfo.CLINIC_NAME}
       🧪 المادة المطلوبة: ${item.name}
       🏷️ التصنيف: ${item.category}
       📊 الكمية المطلوبة: $orderQuantity ${item.unit}

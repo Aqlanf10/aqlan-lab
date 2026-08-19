@@ -37,6 +37,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.data.models.UserRole
 import com.example.network.AuthUiState
+import androidx.fragment.app.FragmentActivity
+import com.example.security.BiometricAuthenticator
 import com.example.ui.components.AqlanLogo
 import com.example.ui.components.ClinicInfo
 import com.example.ui.viewmodel.DentalLabViewModel
@@ -59,7 +61,9 @@ fun FirebaseAuthLoginScreen(
   var selectedTab by remember { mutableIntStateOf(0) } // 0: Login, 1: Doctor PIN, 2: Register Staff
 
   // Login Form States
-  var emailInput by remember { mutableStateOf("Aqlanf10@gmail.com") }
+  // لا يُملأ بريد المالك مسبقاً: كان يكشف حساب المدير لأي شخص يفتح الشاشة
+  // ويترك نصف بيانات الاعتماد جاهزة للتخمين.
+  var emailInput by remember { mutableStateOf("") }
   var passwordInput by remember { mutableStateOf("") }
   var isPasswordVisible by remember { mutableStateOf(false) }
 
@@ -71,6 +75,9 @@ fun FirebaseAuthLoginScreen(
 
   // Quick Doctor PIN State
   var doctorPinInput by remember { mutableStateOf("") }
+
+  val biometricEnabled by viewModel.biometricUnlockEnabled.collectAsState()
+  val biometricAvailable = remember { BiometricAuthenticator.isAvailable(context) }
 
   // Forgot Password Dialog State
   var showForgotPasswordDialog by remember { mutableStateOf(false) }
@@ -178,12 +185,11 @@ fun FirebaseAuthLoginScreen(
           text = { Text("رمز الطبيب", fontWeight = FontWeight.Bold, fontSize = 12.sp) },
           icon = { Icon(Icons.Default.Pin, contentDescription = null, modifier = Modifier.size(18.dp)) }
         )
-        Tab(
-          selected = selectedTab == 2,
-          onClick = { selectedTab = 2 },
-          text = { Text("تسجيل موظف", fontWeight = FontWeight.Bold, fontSize = 12.sp) },
-          icon = { Icon(Icons.Default.PersonAdd, contentDescription = null, modifier = Modifier.size(18.dp)) }
-        )
+        // أُزيل تبويب «تسجيل موظف» من شاشة الدخول.
+        //
+        // كان يسمح لأي شخص — قبل أي مصادقة — بإنشاء حساب لنفسه في نظام المركز
+        // والدخول مباشرة إلى بيانات المرضى والحسابات. إنشاء الحسابات أصبح
+        // متاحاً لمدير النظام فقط من: الإعدادات ← إدارة المستخدمين.
       }
 
       Spacer(Modifier.height(16.dp))
@@ -437,7 +443,9 @@ fun FirebaseAuthLoginScreen(
               )
 
               Text(
-                text = "للاستخدام المباشر داخل العيادة، يمكنك استخدام رمز المرور السري للدكتور (الافتراضي: 1111)",
+                // أُزيل عرض رمز المرور الافتراضي ("الافتراضي: 1111") من الشاشة —
+                // كان مكتوباً حرفياً فوق حقل الإدخال لأي شخص يمسك الجهاز.
+                text = "أدخل رمز المرور الخاص بحسابك للدخول إلى النظام.",
                 style = MaterialTheme.typography.bodySmall,
                 color = Color(0xFF94A3B8),
                 textAlign = TextAlign.Center
@@ -456,10 +464,15 @@ fun FirebaseAuthLoginScreen(
                 keyboardActions = KeyboardActions(onDone = {
                   focusManager.clearFocus()
                   if (viewModel.unlockAppWithPin(doctorPinInput)) {
-                    Toast.makeText(context, "مرحباً د. عقلان الكامل", Toast.LENGTH_SHORT).show()
+                    doctorPinInput = ""
                     onLoginSuccess()
                   } else {
-                    Toast.makeText(context, "رمز المرور غير صحيح", Toast.LENGTH_SHORT).show()
+                    doctorPinInput = ""
+                    Toast.makeText(
+                      context,
+                      viewModel.unlockError.value.ifBlank { "رمز المرور غير صحيح" },
+                      Toast.LENGTH_LONG
+                    ).show()
                   }
                 }),
                 colors = OutlinedTextFieldDefaults.colors(
@@ -477,10 +490,15 @@ fun FirebaseAuthLoginScreen(
                 onClick = {
                   focusManager.clearFocus()
                   if (viewModel.unlockAppWithPin(doctorPinInput)) {
-                    Toast.makeText(context, "مرحباً د. عقلان الكامل", Toast.LENGTH_SHORT).show()
+                    doctorPinInput = ""
                     onLoginSuccess()
                   } else {
-                    Toast.makeText(context, "رمز المرور غير صحيح", Toast.LENGTH_SHORT).show()
+                    doctorPinInput = ""
+                    Toast.makeText(
+                      context,
+                      viewModel.unlockError.value.ifBlank { "رمز المرور غير صحيح" },
+                      Toast.LENGTH_LONG
+                    ).show()
                   }
                 },
                 colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFD97706)),
@@ -492,19 +510,48 @@ fun FirebaseAuthLoginScreen(
                 Text("فتح النظام كطبيب مسؤول", fontWeight = FontWeight.Bold)
               }
 
-              // Biometric option
-              OutlinedButton(
-                onClick = {
-                  viewModel.unlockAppWithBiometric()
-                  Toast.makeText(context, "تم التحقق بالبصمة الحيوية", Toast.LENGTH_SHORT).show()
-                  onLoginSuccess()
-                },
-                shape = RoundedCornerShape(10.dp),
-                modifier = Modifier.fillMaxWidth()
-              ) {
-                Icon(Icons.Default.Fingerprint, contentDescription = null, tint = Color(0xFF60A5FA), modifier = Modifier.size(20.dp))
-                Spacer(Modifier.width(8.dp))
-                Text("الدخول عبر البصمة البيومترية 👆", color = Color(0xFFE2E8F0))
+              // --- الدخول بالبصمة ---
+              //
+              // الثغرة التي أُصلحت هنا كانت الأخطر في التطبيق كله: هذا الزر كان
+              // يستدعي دالة تُرجع true دائماً بلا أي تحقق، ثم يفتح النظام
+              // بصلاحيات مدير كاملة. أي شخص يمسك الجهاز — أو يجده مفقوداً —
+              // كان يدخل إلى كل بيانات المرضى والحسابات بضغطة واحدة.
+              // الآن: نافذة BiometricPrompt الحقيقية من نظام أندرويد، ولا يُفتح
+              // التطبيق إلا بعد نجاح تحقق النظام، وفقط إذا فعّل المستخدم الميزة
+              // مسبقاً بعد دخول ناجح برمز المرور.
+              if (biometricEnabled && biometricAvailable) {
+                OutlinedButton(
+                  onClick = {
+                    val activity = context as? FragmentActivity
+                    if (activity == null) {
+                      Toast.makeText(context, "تعذر فتح نافذة التحقق بالبصمة", Toast.LENGTH_SHORT).show()
+                      return@OutlinedButton
+                    }
+                    BiometricAuthenticator.authenticate(
+                      activity = activity,
+                      onSuccess = {
+                        if (viewModel.onBiometricAuthenticated()) {
+                          onLoginSuccess()
+                        } else {
+                          Toast.makeText(
+                            context,
+                            viewModel.unlockError.value.ifBlank { "تعذر الدخول بالبصمة" },
+                            Toast.LENGTH_LONG
+                          ).show()
+                        }
+                      },
+                      onError = { message ->
+                        Toast.makeText(context, message, Toast.LENGTH_LONG).show()
+                      }
+                    )
+                  },
+                  shape = RoundedCornerShape(10.dp),
+                  modifier = Modifier.fillMaxWidth().testTag("biometric_btn")
+                ) {
+                  Icon(Icons.Default.Fingerprint, contentDescription = null, tint = Color(0xFF60A5FA), modifier = Modifier.size(20.dp))
+                  Spacer(Modifier.width(8.dp))
+                  Text("الدخول عبر البصمة", color = Color(0xFFE2E8F0))
+                }
               }
             }
           }
@@ -602,11 +649,11 @@ fun FirebaseAuthLoginScreen(
               // Register Button
               Button(
                 onClick = {
-                  if (regFullName.isBlank() || regEmail.isBlank() || regPassword.isBlank()) {
-                    Toast.makeText(context, "يرجى تعبئة كافة الحقول المطلوبة", Toast.LENGTH_SHORT).show()
-                  } else {
-                    viewModel.registerFirebaseStaff(regEmail, regPassword, regFullName, regRole)
-                  }
+                  Toast.makeText(
+                    context,
+                    "إنشاء حسابات الموظفين متاح لمدير النظام فقط من: الإعدادات ← إدارة المستخدمين",
+                    Toast.LENGTH_LONG
+                  ).show()
                 },
                 enabled = authState !is AuthUiState.Loading,
                 colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF059669)),

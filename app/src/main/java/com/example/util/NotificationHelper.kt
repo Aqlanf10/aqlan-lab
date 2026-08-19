@@ -70,7 +70,10 @@ object NotificationHelper {
       val urgentChannel = NotificationChannel(
         CHANNEL_ID_URGENT_ALERTS,
         "تنبيهات الحالات المستعجلة 🚨",
-        NotificationManager.IMPORTANCE_MAX
+        // كان IMPORTANCE_MAX وهو ثابت أولوية إشعار (Notification priority) لا
+        // ثابت أهمية قناة (channel importance) — قيمة غير صالحة هنا. أعلى قيمة
+        // صحيحة لقناة الإشعارات هي IMPORTANCE_HIGH.
+        NotificationManager.IMPORTANCE_HIGH
       ).apply {
         description = "تنبيهات الحالات الطارئة ومواعيد التسليم المتأخرة"
         enableLights(true)
@@ -99,6 +102,9 @@ object NotificationHelper {
   /**
    * Alerts staff when a new shipment is registered in the clinic
    */
+  // الصلاحية مفحوصة فعلياً في أول سطر عبر hasNotificationPermission()، لكن Lint
+  // لا يربط الفحص بالاستدعاء عبر دالة مساعدة. التنبيه مكبوت بعد التحقق منه.
+  @android.annotation.SuppressLint("MissingPermission")
   fun showNewShipmentNotification(
     context: Context,
     shipment: Shipment,
@@ -143,6 +149,16 @@ object NotificationHelper {
         .setAutoCancel(true)
         .setSound(defaultSoundUri)
         .setPriority(if (shipment.isUrgent) NotificationCompat.PRIORITY_MAX else NotificationCompat.PRIORITY_HIGH)
+        // إخفاء اسم المريض ومحتوى الإشعار عن شاشة القفل: كانت الإشعارات تعرض
+        // "إرسالية جديدة: <اسم المريض>" لأي شخص ينظر إلى الجهاز المقفل.
+        .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
+        .setPublicVersion(
+          NotificationCompat.Builder(context, CHANNEL_ID_NEW_SHIPMENTS)
+            .setSmallIcon(R.drawable.ic_aqlan_logo)
+            .setContentTitle("إرسالية معمل جديدة")
+            .setContentText("افتح التطبيق لعرض التفاصيل")
+            .build()
+        )
         .setContentIntent(pendingIntent)
         .setColor(0xFF2563EB.toInt())
 
@@ -157,6 +173,9 @@ object NotificationHelper {
   /**
    * Alerts staff when an existing order's status changes
    */
+  // الصلاحية مفحوصة فعلياً في أول سطر عبر hasNotificationPermission()، لكن Lint
+  // لا يربط الفحص بالاستدعاء عبر دالة مساعدة. التنبيه مكبوت بعد التحقق منه.
+  @android.annotation.SuppressLint("MissingPermission")
   fun showStatusChangeNotification(
     context: Context,
     shipment: Shipment,
@@ -215,6 +234,14 @@ object NotificationHelper {
         .setAutoCancel(true)
         .setSound(defaultSoundUri)
         .setPriority(NotificationCompat.PRIORITY_HIGH)
+        .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
+        .setPublicVersion(
+          NotificationCompat.Builder(context, CHANNEL_ID_STATUS_CHANGES)
+            .setSmallIcon(R.drawable.ic_aqlan_logo)
+            .setContentTitle("تحديث حالة إرسالية")
+            .setContentText("افتح التطبيق لعرض التفاصيل")
+            .build()
+        )
         .setContentIntent(pendingIntent)
         .setColor(
           when (newStatus) {

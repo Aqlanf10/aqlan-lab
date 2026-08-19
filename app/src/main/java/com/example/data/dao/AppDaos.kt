@@ -159,7 +159,7 @@ interface AuditLogDao {
   @Query("SELECT * FROM audit_logs ORDER BY timestamp DESC LIMIT 200")
   fun getRecentLogs(): Flow<List<AuditLog>>
 
-  @Query("SELECT * FROM audit_logs ORDER BY timestamp DESC LIMIT 300")
+  @Query("SELECT * FROM audit_logs ORDER BY timestamp DESC")
   suspend fun getAllSync(): List<AuditLog>
 
   @Insert(onConflict = OnConflictStrategy.REPLACE)
@@ -250,7 +250,9 @@ interface InventoryDao {
   @Query("SELECT * FROM inventory_transactions ORDER BY date DESC LIMIT 300")
   fun getAllTransactions(): Flow<List<InventoryTransaction>>
 
-  @Query("SELECT * FROM inventory_transactions ORDER BY date DESC LIMIT 300")
+  // بدون LIMIT: هذه الدالة تُستخدم لبناء النسخ الاحتياطية، وكان الحد 300 يقتطع
+  // حركات المخزون الأقدم بصمت من كل نسخة احتياطية — فقدان بيانات دائم عند الاستعادة.
+  @Query("SELECT * FROM inventory_transactions ORDER BY date DESC")
   suspend fun getAllTransactionsSync(): List<InventoryTransaction>
 
   @Query("SELECT * FROM inventory_transactions WHERE itemId = :itemId ORDER BY date DESC")

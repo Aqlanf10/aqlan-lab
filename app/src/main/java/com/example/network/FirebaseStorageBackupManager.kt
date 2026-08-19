@@ -53,7 +53,10 @@ class FirebaseStorageBackupManager(
   private val _availableStorageBackups = MutableStateFlow<List<FirebaseStorageBackupInfo>>(emptyList())
   val availableStorageBackups: StateFlow<List<FirebaseStorageBackupInfo>> = _availableStorageBackups.asStateFlow()
 
-  private val _isAutoBackupEnabled = MutableStateFlow(true)
+  // الافتراضي أصبح «معطّل»: كان مفعّلاً تلقائياً ويرفع نسخة كاملة من قاعدة
+  // البيانات (أسماء المرضى وكل الحسابات) عند كل تعديل، دون أي موافقة صريحة من
+  // المستخدم وبلا اعتبار لاستهلاك الباقة. يُفعّل الآن يدوياً من الإعدادات.
+  private val _isAutoBackupEnabled = MutableStateFlow(false)
   val isAutoBackupEnabled: StateFlow<Boolean> = _isAutoBackupEnabled.asStateFlow()
 
   private val _autoBackupFrequency = MutableStateFlow(AutoBackupFrequency.ON_EVERY_CHANGE)
@@ -115,7 +118,8 @@ class FirebaseStorageBackupManager(
         payments = database.paymentDao().getAllSync(),
         inventoryItems = database.inventoryDao().getAllSync(),
         inventoryTransactions = database.inventoryDao().getAllTransactionsSync(),
-        users = database.userDao().getAllSync()
+        // لا تُرفع حسابات المستخدمين (تحتوي تجزئة رموز المرور) إلى التخزين السحابي.
+        users = emptyList()
       )
 
       val jsonString = payloadAdapter.toJson(payload)
@@ -153,7 +157,16 @@ class FirebaseStorageBackupManager(
           Log.w(TAG, "Could not get download URL: ${e.message}")
         }
       } else {
-        Log.w(TAG, "Firebase is offline or not configured, saving metadata locally")
+        // فشل صريح: سابقاً كانت الدالة تكمل وتُظهر «تم رفع النسخة الاحتياطية
+        // بنجاح» مع حجم ملف وعدد سجلات، بينما لم يُرفع شيء إلى أي مكان. النسخة
+        // الاحتياطية التي يظن المركز أنها موجودة ولا وجود لها أخطر من عدم وجود
+        // نسخ أصلاً.
+        _backupState.value = SyncState.ERROR
+        _statusMessage.value =
+          "تعذر الرفع: التخزين السحابي (Firebase Storage) غير مهيأ على هذا التطبيق. استخدم «تصدير نسخة JSON» لحفظ نسخة على الجهاز."
+        return@withContext Result.failure(
+          IllegalStateException("التخزين السحابي غير مهيأ")
+        )
       }
 
       val backupInfo = FirebaseStorageBackupInfo(
@@ -296,7 +309,9 @@ class FirebaseStorageBackupManager(
       _statusMessage.value = "جاري استعادة البيانات إلى قاعدة البيانات المحلية..."
       val payload = payloadAdapter.fromJson(jsonContent) ?: throw IllegalStateException("صيغة النسخة الاحتياطية غير صالحة")
 
-      // Apply to Room database
+      // ملاحظة: الاستعادة تدمج فوق البيانات الحالية ولا تحذف السجلات المحلية
+      // غير الموجودة في النسخة. هذا سلوك مقصود (لا يفقد المستخدم عملاً جديداً)
+      // لكنه يعني أن سجلاً حُذف محلياً قد يعود. الشاشة تُنبّه المستخدم قبل التنفيذ.
       if (payload.labs.isNotEmpty()) database.labDao().insertAll(payload.labs)
       if (payload.workTypes.isNotEmpty()) database.workTypeDao().insertAll(payload.workTypes)
       if (payload.labPrices.isNotEmpty()) database.labPriceDao().insertAll(payload.labPrices)

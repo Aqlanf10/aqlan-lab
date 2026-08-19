@@ -1,0 +1,81 @@
+rules_version = '2';
+
+// ==========================================================================
+// قواعد أمان Firestore — نظام إدارة المعامل، مركز د. عقلان الكامل
+//
+// لماذا هذا الملف موجود:
+// لم يكن المستودع يحتوي على أي قواعد أمان. مشروع Firebase جديد يبدأ إما بوضع
+// اختبار (allow read, write: if true) الذي يجعل كل بيانات المرضى والحسابات
+// المالية مقروءة ومكتوبة من أي شخص على الإنترنت يعرف معرّف المشروع، أو بوضع
+// مغلق يجعل كل الميزات السحابية تفشل بصمت. هذه القواعد هي الحد الأدنى الآمن.
+//
+// النشر:
+//   firebase deploy --only firestore:rules
+// ==========================================================================
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // هل المستخدم مسجل دخول وضمن طاقم المركز المعتمد؟
+    function isClinicStaff(clinicId) {
+      return request.auth != null
+        && exists(/databases/$(database)/documents/clinics/$(clinicId)/staff/$(request.auth.uid));
+    }
+
+    function isClinicAdmin(clinicId) {
+      return isClinicStaff(clinicId)
+        && get(/databases/$(database)/documents/clinics/$(clinicId)/staff/$(request.auth.uid)).data.role == 'ADMIN';
+    }
+
+    // بيانات المركز: القراءة والكتابة لطاقم المركز فقط.
+    match /clinics/{clinicId} {
+      allow read: if isClinicStaff(clinicId);
+      allow write: if isClinicAdmin(clinicId);
+
+      // سجل الموظفين: يقرأه الطاقم، ويكتبه المدير فقط.
+      // (لا يجوز أن يُنشئ أحد سجل موظف لنفسه — كان التسجيل الذاتي مفتوحاً.)
+      match /staff/{staffId} {
+        allow read: if isClinicStaff(clinicId);
+        allow write: if isClinicAdmin(clinicId);
+      }
+
+      // الإرساليات تحتوي أسماء مرضى: طاقم المركز فقط، ولا قراءة عامة إطلاقاً.
+      match /shipments/{shipmentId} {
+        allow read, write: if isClinicStaff(clinicId);
+      }
+
+      match /labs/{labId} {
+        allow read, write: if isClinicStaff(clinicId);
+      }
+
+      match /inventory/{itemId} {
+        allow read, write: if isClinicStaff(clinicId);
+      }
+
+      // النسخ الاحتياطية تحتوي قاعدة البيانات كاملة: المدير فقط.
+      match /backups/{backupId} {
+        allow read, write: if isClinicAdmin(clinicId);
+      }
+
+      match /backup_payloads/{payloadId} {
+        allow read, write: if isClinicAdmin(clinicId);
+      }
+
+      match /storage_backups/{backupId} {
+        allow read, write: if isClinicAdmin(clinicId);
+      }
+    }
+
+    // مجموعة "all_shipments" العامة أُزيلت من التطبيق: كانت تكتب أسماء المرضى
+    // خارج مسار المركز، بلا أي عزل بين العيادات. تُرفض هنا صراحةً حتى لو حاول
+    // إصدار قديم من التطبيق الكتابة فيها.
+    match /all_shipments/{document=**} {
+      allow read, write: if false;
+    }
+
+    // كل ما عدا ذلك مرفوض افتراضياً.
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

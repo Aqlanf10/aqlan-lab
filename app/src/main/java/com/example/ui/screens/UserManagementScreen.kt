@@ -39,6 +39,7 @@ fun UserManagementScreen(
   onBack: () -> Unit,
   modifier: Modifier = Modifier
 ) {
+  val context = LocalContext.current
   val activeUser by viewModel.activeUser.collectAsState()
   val allUsers by viewModel.allUsers.collectAsState()
 
@@ -218,7 +219,9 @@ fun UserManagementScreen(
                 ) {
                   RoleBadge(role = user.role)
                   Text(
-                    text = "• كلمة السر: ${"•".repeat(user.pinCode.length.coerceAtLeast(4))}",
+                    // كان يعرض عدد نقاط مساوياً لطول رمز المرور الحقيقي — تسريب
+                    // يقلّص مساحة التخمين. العدد ثابت الآن ولا يدل على شيء.
+                    text = "• رمز المرور: ••••",
                     style = MaterialTheme.typography.labelSmall,
                     color = Color.Gray
                   )
@@ -260,8 +263,10 @@ fun UserManagementScreen(
       user = null,
       onDismiss = { showAddDialog = false },
       onSave = { username, fullName, role, pin, color ->
-        viewModel.addUser(username, fullName, role, pin, color)
-        showAddDialog = false
+        viewModel.addUser(username, fullName, role, pin, color) { success, message ->
+          android.widget.Toast.makeText(context, message, android.widget.Toast.LENGTH_LONG).show()
+          if (success) showAddDialog = false
+        }
       }
     )
   }
@@ -273,17 +278,19 @@ fun UserManagementScreen(
       onDismiss = { userToEdit = null },
       onSave = { username, fullName, role, pin, color ->
         userToEdit?.let { existing ->
-          viewModel.updateUser(
+          viewModel.updateUserWithOptionalPin(
             existing.copy(
               username = username,
               fullName = fullName,
               role = role,
-              pinCode = pin,
               avatarColor = color
-            )
-          )
+            ),
+            newPin = pin
+          ) { success, message ->
+            android.widget.Toast.makeText(context, message, android.widget.Toast.LENGTH_LONG).show()
+            if (success) userToEdit = null
+          }
         }
-        userToEdit = null
       }
     )
   }
@@ -297,7 +304,11 @@ fun UserManagementScreen(
       confirmButton = {
         Button(
           onClick = {
-            userToDelete?.let { viewModel.deleteUser(it) }
+            userToDelete?.let { target ->
+              viewModel.deleteUser(target) { _, message ->
+                android.widget.Toast.makeText(context, message, android.widget.Toast.LENGTH_LONG).show()
+              }
+            }
             userToDelete = null
           },
           colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
@@ -323,7 +334,10 @@ fun UserFormDialog(
   var username by remember(user) { mutableStateOf(user?.username ?: "") }
   var fullName by remember(user) { mutableStateOf(user?.fullName ?: "") }
   var role by remember(user) { mutableStateOf(user?.role ?: UserRole.STAFF) }
-  var pinCode by remember(user) { mutableStateOf(user?.pinCode ?: "") }
+  // لا يُملأ رمز المرور الحالي مسبقاً: القيمة المخزنة تجزئة وليست رمزاً، وحتى
+  // لو كانت رمزاً فإن عرضه في حقل قابل للإظهار تسريب. الحقل الفارغ عند التعديل
+  // يعني «أبقِ الرمز الحالي كما هو».
+  var pinCode by remember(user) { mutableStateOf("") }
   var isPasswordVisible by remember { mutableStateOf(false) }
 
   val avatarColors = listOf(
@@ -382,7 +396,9 @@ fun UserFormDialog(
         OutlinedTextField(
           value = pinCode,
           onValueChange = { pinCode = it; errorMessage = "" },
-          label = { Text("كلمة المرور / كلمة السر (PIN)") },
+          label = {
+            Text(if (user == null) "رمز المرور (٤ أرقام على الأقل)" else "رمز مرور جديد (اتركه فارغاً للإبقاء على الحالي)")
+          },
           singleLine = true,
           visualTransformation = if (isPasswordVisible) VisualTransformation.None else PasswordVisualTransformation(),
           keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
@@ -454,8 +470,8 @@ fun UserFormDialog(
             errorMessage = "يرجى إدخال اسم المستخدم"
             return@Button
           }
-          if (pinCode.isBlank()) {
-            errorMessage = "يرجى إدخال كلمة المرور / السر"
+          if (user == null && pinCode.isBlank()) {
+            errorMessage = "يرجى إدخال رمز المرور"
             return@Button
           }
           onSave(username, fullName, role, pinCode, selectedColor)

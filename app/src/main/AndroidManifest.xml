@@ -12,8 +12,19 @@
         android:name="android.hardware.camera"
         android:required="false" />
 
+    <!--
+      android:allowBackup="false"
+      كان "true" مع ملفي قواعد نسخ فارغين تماماً، أي أن قاعدة بيانات المركز
+      كاملة — أسماء المرضى، الإرساليات، الحسابات المالية، وحسابات المستخدمين —
+      كانت تُنسخ إلى Google Drive الخاص بحساب الجهاز وتُنقل عبر "نقل بيانات
+      الجهاز"، بدون تشفير من طرف التطبيق وبلا علم المركز. بيانات صحية للمرضى
+      لا يجوز أن تخرج من الجهاز عبر مسار لا يتحكم به المركز.
+
+      android:excludeFromRecents / FLAG_SECURE تُطبَّق برمجياً في MainActivity
+      لمنع ظهور بيانات المرضى في لقطة شاشة قائمة التطبيقات الأخيرة.
+    -->
     <application
-        android:allowBackup="true"
+        android:allowBackup="false"
         android:dataExtractionRules="@xml/data_extraction_rules"
         android:fullBackupContent="@xml/backup_rules"
         android:icon="@mipmap/ic_launcher"

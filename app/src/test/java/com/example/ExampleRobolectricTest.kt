@@ -16,8 +16,11 @@ class ExampleRobolectricTest {
   @Test
   fun `read app name string from context`() {
     val context = ApplicationProvider.getApplicationContext<Context>()
+    // كان هذا الاختبار فاشلاً في الكود الأصلي: يتوقع "Dental Lab Manager" بينما
+    // اسم التطبيق الفعلي في strings.xml عربي. أي أن مجموعة الاختبارات كانت حمراء
+    // قبل أي تعديل.
     val appName = context.getString(R.string.app_name)
-    assertEquals("Dental Lab Manager", appName)
+    assertEquals("د. عقلان الكامل", appName)
   }
 
   @Test

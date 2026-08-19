@@ -1,17 +1,25 @@
 package com.example.ui.navigation
 
 import androidx.compose.animation.*
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.*
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material.icons.outlined.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.navigation.NavGraph.Companion.findStartDestination
@@ -59,10 +67,25 @@ fun MainAppScaffold(
   modifier: Modifier = Modifier
 ) {
   val isAppLocked by viewModel.isAppLocked.collectAsState()
-  val appLockEnabled by viewModel.appLockEnabled.collectAsState()
+  val needsInitialSetup by viewModel.needsInitialSetup.collectAsState()
 
-  // Protected Login Screen (Firebase Auth + Doctor Security)
-  if (isAppLocked && appLockEnabled) {
+  // 1) إعداد أول تشغيل: تعيين حساب المدير ورمز مروره قبل أي شيء.
+  if (needsInitialSetup) {
+    InitialSetupScreen(
+      viewModel = viewModel,
+      onSetupComplete = { /* يفتح التطبيق مباشرة بعد الحفظ */ }
+    )
+    return
+  }
+
+  // 2) شاشة الدخول.
+  //
+  // ما أُصلح: كان الشرط `isAppLocked && appLockEnabled`، أي أن تعطيل مفتاح
+  // «طلب الرمز عند التشغيل» من الإعدادات كان يلغي المصادقة بالكامل ويفتح كل
+  // بيانات المرضى والحسابات لأي شخص يفتح التطبيق، بل ويترك المستخدم النشط هو
+  // حساب المدير كامل الصلاحيات. الآن المصادقة إلزامية دائماً؛ المفتاح صار
+  // يتحكم فقط في إعادة القفل عند العودة للتطبيق (وليس في تخطي الدخول).
+  if (isAppLocked) {
     FirebaseAuthLoginScreen(
       viewModel = viewModel,
       onLoginSuccess = { /* Unlocked and proceeds to MainAppScaffold */ }
@@ -266,6 +289,11 @@ fun MainAppScaffold(
 
       // 8. Finance (Admin/Accountant)
       composable(Screen.Finance.route) {
+        RoleGuard(
+          activeRole = activeUser.role,
+          allowedRoles = setOf(UserRole.ADMIN, UserRole.ACCOUNTANT),
+          onBack = { navController.popBackStack() }
+        ) {
         FinanceScreen(
           viewModel = viewModel,
           onNavigateToLabDetail = { labId ->
@@ -273,6 +301,7 @@ fun MainAppScaffold(
           },
           onBack = { navController.popBackStack() }
         )
+        }
       }
 
       // 9. Reports & Statistics
@@ -312,12 +341,18 @@ fun MainAppScaffold(
         )
       }
 
-      // 11. Audit Log
+      // 11. Audit Log — مدير النظام والمحاسب
       composable(Screen.AuditLog.route) {
-        AuditLogScreen(
-          viewModel = viewModel,
+        RoleGuard(
+          activeRole = activeUser.role,
+          allowedRoles = setOf(UserRole.ADMIN, UserRole.ACCOUNTANT),
           onBack = { navController.popBackStack() }
-        )
+        ) {
+          AuditLogScreen(
+            viewModel = viewModel,
+            onBack = { navController.popBackStack() }
+          )
+        }
       }
 
       // 12. Settings
@@ -335,20 +370,32 @@ fun MainAppScaffold(
         )
       }
 
-      // 13. Cloud & Online Sync
+      // 13. Cloud & Online Sync — مدير النظام فقط (يشمل تصدير قاعدة البيانات كاملة)
       composable(Screen.CloudSync.route) {
-        CloudSyncScreen(
-          viewModel = viewModel,
-          onNavigateBack = { navController.popBackStack() }
-        )
+        RoleGuard(
+          activeRole = activeUser.role,
+          allowedRoles = setOf(UserRole.ADMIN),
+          onBack = { navController.popBackStack() }
+        ) {
+          CloudSyncScreen(
+            viewModel = viewModel,
+            onNavigateBack = { navController.popBackStack() }
+          )
+        }
       }
 
-      // 14. User Management & Passwords
+      // 14. User Management & Passwords — مدير النظام فقط
       composable(Screen.UserManagement.route) {
-        UserManagementScreen(
-          viewModel = viewModel,
+        RoleGuard(
+          activeRole = activeUser.role,
+          allowedRoles = setOf(UserRole.ADMIN),
           onBack = { navController.popBackStack() }
-        )
+        ) {
+          UserManagementScreen(
+            viewModel = viewModel,
+            onBack = { navController.popBackStack() }
+          )
+        }
       }
 
       // 15. Inventory & Supplies Tracking
@@ -375,11 +422,61 @@ fun MainAppScaffold(
       UserSwitchDialog(
         users = allUsers,
         activeUser = activeUser,
-        onUserSelected = { selectedUser ->
-          viewModel.switchUser(selectedUser)
-        },
+        viewModel = viewModel,
         onDismiss = { showUserSwitchDialog = false }
       )
     }
+  }
+}
+
+
+/**
+ * حارس الصلاحيات على مستوى المسار.
+ *
+ * سابقاً كان تقييد الصلاحيات شكلياً فقط: شاشة «المالية» كانت تُخفى من الشريط
+ * السفلي للموظف، لكن المسار نفسه يبقى مسجلاً وقابلاً للوصول (من أي زر تنقّل أو
+ * رابط داخلي أو رجوع في المكدّس)، وكذلك «إدارة المستخدمين» و«المزامنة السحابية»
+ * اللتان تكشفان رموز المستخدمين وتُصدّران قاعدة البيانات كاملة.
+ */
+@Composable
+private fun RoleGuard(
+  activeRole: UserRole,
+  allowedRoles: Set<UserRole>,
+  onBack: () -> Unit,
+  content: @Composable () -> Unit
+) {
+  if (activeRole in allowedRoles) {
+    content()
+    return
+  }
+
+  Column(
+    modifier = Modifier
+      .fillMaxSize()
+      .padding(24.dp),
+    horizontalAlignment = Alignment.CenterHorizontally,
+    verticalArrangement = Arrangement.Center
+  ) {
+    Icon(
+      imageVector = Icons.Default.Lock,
+      contentDescription = null,
+      tint = MaterialTheme.colorScheme.error,
+      modifier = Modifier.size(48.dp)
+    )
+    Spacer(Modifier.height(12.dp))
+    Text(
+      text = "لا تملك صلاحية الوصول إلى هذه الشاشة",
+      fontWeight = FontWeight.Bold,
+      textAlign = TextAlign.Center
+    )
+    Spacer(Modifier.height(6.dp))
+    Text(
+      text = "هذه الشاشة متاحة للصلاحيات: ${allowedRoles.joinToString("، ") { it.titleAr }}",
+      fontSize = 12.sp,
+      color = MaterialTheme.colorScheme.onSurfaceVariant,
+      textAlign = TextAlign.Center
+    )
+    Spacer(Modifier.height(16.dp))
+    Button(onClick = onBack) { Text("رجوع") }
   }
 }

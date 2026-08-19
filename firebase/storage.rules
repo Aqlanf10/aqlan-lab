@@ -1,0 +1,37 @@
+rules_version = '2';
+
+// ==========================================================================
+// قواعد أمان Firebase Storage — النسخ الاحتياطية
+//
+// النسخة الاحتياطية ملف JSON واحد يحتوي كل بيانات المركز: أسماء المرضى، أرقام
+// الأسنان، الأسعار، المدفوعات، وحسابات المعامل. مسار الملف قابل للتخمين
+// (backups/clinic_aqlan_center/latest_backup.json)، لذلك القاعدة الوحيدة
+// المقبولة هي: لا قراءة ولا كتابة بدون مصادقة وانتماء للمركز.
+//
+// النشر:
+//   firebase deploy --only storage
+// ==========================================================================
+
+service firebase.storage {
+  match /b/{bucket}/o {
+
+    function isClinicStaff(clinicId) {
+      return request.auth != null
+        && firestore.exists(/databases/(default)/documents/clinics/$(clinicId)/staff/$(request.auth.uid));
+    }
+
+    function isClinicAdmin(clinicId) {
+      return isClinicStaff(clinicId)
+        && firestore.get(/databases/(default)/documents/clinics/$(clinicId)/staff/$(request.auth.uid)).data.role == 'ADMIN';
+    }
+
+    match /backups/{clinicId}/{fileName} {
+      allow read, write: if isClinicAdmin(clinicId)
+        && request.resource == null || request.resource.size < 50 * 1024 * 1024;
+    }
+
+    match /{allPaths=**} {
+      allow read, write: if false;
+    }
+  }
+}

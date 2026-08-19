@@ -58,7 +58,8 @@ class FirebaseAuthManager(
   private var firebaseAuth: FirebaseAuth? = null
   private var credentialManager: CredentialManager = CredentialManager.create(context)
 
-  // Local Authorized Personnel Whitelist
+  // قائمة بيضاء صريحة بالبُرد المصرح لها. المطابقة على البريد الكامل فقط —
+  // لا مطابقة جزئية ولا اشتقاق دور من نص البريد.
   private val defaultAuthorizedEmails = setOf(
     MASTER_DOCTOR_EMAIL.lowercase(),
     "aqlanf10@gmail.com",
@@ -86,24 +87,39 @@ class FirebaseAuthManager(
     }
   }
 
+  /**
+   * تحديد ما إذا كان حساب Firebase مصرحاً له.
+   *
+   * الثغرة التي أُصلحت هنا (تصعيد صلاحيات):
+   * كان الشرط `email.contains("aqlan")` يمنح دور **مدير النظام** لأي بريد يحتوي
+   * على كلمة "aqlan" في أي موضع — مثل `aqlan@gmail.com` أو
+   * `attacker.aqlan@example.com` أو `xaqlanx@mail.ru`. وبما أن شاشة الدخول كانت
+   * تسمح بالتسجيل الذاتي المفتوح، كان بإمكان أي شخص إنشاء بريد بهذا الشكل خلال
+   * دقيقة والدخول كمالك المركز إلى كل بيانات المرضى والحسابات المالية.
+   *
+   * الآن: المطابقة على البريد الكامل تماماً مقابل قائمة بيضاء صريحة، ولا يُمنح
+   * دور من نص البريد إطلاقاً — الدور الفعلي يُقرأ من حساب المستخدم المسجّل في
+   * قاعدة بيانات المركز (انظر `DentalLabViewModel.bindFirebaseSessionToLocalUser`).
+   */
   private fun checkAndSetAuthorizedUser(fbUser: FirebaseUser) {
-    val email = fbUser.email?.lowercase() ?: ""
-    val isOwner = email == MASTER_DOCTOR_EMAIL.lowercase() || email.contains("aqlan")
-
-    val isAllowed = isOwner || defaultAuthorizedEmails.contains(email)
+    val email = fbUser.email?.trim()?.lowercase() ?: ""
+    val isOwner = email == MASTER_DOCTOR_EMAIL.trim().lowercase()
+    val isAllowed = defaultAuthorizedEmails.contains(email)
 
     if (isAllowed) {
       _isAuthorized.value = true
       val appUser = User(
-        id = if (isOwner) 1 else 2,
+        id = 0L,
         username = email.substringBefore("@"),
-        fullName = if (isOwner) ClinicInfo.DOCTOR_NAME else (fbUser.displayName ?: "موظف المركز"),
-        role = if (isOwner) UserRole.ADMIN else UserRole.STAFF,
-        pinCode = if (isOwner) "1111" else "2222"
+        fullName = fbUser.displayName ?: email.substringBefore("@"),
+        // الدور الفعلي يأتي من قاعدة بيانات المركز، لا من البريد.
+        role = UserRole.STAFF,
+        pinHash = ""
       )
       _authState.value = AuthUiState.Success(fbUser, appUser, isOwner)
     } else {
       _isAuthorized.value = false
+      firebaseAuth?.signOut()
       _authState.value = AuthUiState.Unauthorized(
         email = email,
         message = "هذا الحساب ($email) غير مصرح له بالوصول إلى نظام إدارة المعامل لمركز الدكتور عقلان الكامل. يرجى مراجعة إدارة المركز لإضافة صلاحيتك."
@@ -194,7 +210,18 @@ class FirebaseAuthManager(
   suspend fun signInWithGoogle(activityContext: Context): Result<FirebaseUser?> = withContext(Dispatchers.IO) {
     _authState.value = AuthUiState.Loading
     try {
-      val googleIdOption = GetSignInWithGoogleOption.Builder("156761224659-placeholder.apps.googleusercontent.com")
+      // معرّف عميل Google كان قيمة وهمية ("...-placeholder.apps.googleusercontent.com")
+      // مكتوبة داخل الكود، أي أن زر «تسجيل الدخول عبر Google» لم يكن ليعمل أبداً
+      // على أي جهاز — يفشل بخطأ غامض. أصبح يُقرأ من موارد التطبيق، ويُرفض بوضوح
+      // إذا لم يُضبط بعد.
+      val webClientId = context.getString(com.example.R.string.google_web_client_id)
+      if (webClientId.isBlank() || webClientId.contains("placeholder")) {
+        val message = "تسجيل الدخول عبر Google غير مهيأ على هذا التطبيق. استخدم البريد وكلمة المرور أو رمز المرور."
+        _authState.value = AuthUiState.Error(message)
+        return@withContext Result.failure(IllegalStateException(message))
+      }
+
+      val googleIdOption = GetSignInWithGoogleOption.Builder(webClientId)
         .build()
 
       val request = GetCredentialRequest.Builder()

@@ -9,6 +9,11 @@ import java.util.Date
 import java.util.Locale
 
 class DentalLabRepository(private val database: AppDatabase) {
+  private companion object {
+    /** أول رقم إرسالية في النظام (الترقيم يبدأ من #000126). */
+    const val SHIPMENT_NUMBER_START = 125
+  }
+
   private val labDao = database.labDao()
   private val workTypeDao = database.workTypeDao()
   private val labPriceDao = database.labPriceDao()
@@ -36,22 +41,27 @@ class DentalLabRepository(private val database: AppDatabase) {
   val lowStockInventoryItems: Flow<List<InventoryItem>> = inventoryDao.getLowStockItems()
   val allInventoryTransactions: Flow<List<InventoryTransaction>> = inventoryDao.getAllTransactions()
 
-  suspend fun checkAndSeedInitialData() {
-    val count = shipmentDao.getShipmentCount()
-    if (count == 0) {
-      userDao.insertAll(DatabaseSeedData.defaultUsers)
-      labDao.insertAll(DatabaseSeedData.defaultLabs)
-      workTypeDao.insertAll(DatabaseSeedData.defaultWorkTypes)
-      labPriceDao.insertAll(DatabaseSeedData.defaultLabPrices)
-      shipmentDao.insertAll(DatabaseSeedData.defaultShipments)
-      paymentDao.insertAll(DatabaseSeedData.defaultPayments)
-      auditLogDao.insertAll(DatabaseSeedData.defaultAuditLogs)
-      inventoryDao.insertAll(DatabaseSeedData.defaultInventoryItems)
-      inventoryDao.insertAllTransactions(DatabaseSeedData.defaultInventoryTransactions)
-      for (setting in DatabaseSeedData.defaultSettings) {
-        settingDao.setSetting(setting)
-      }
+  /**
+   * بذر البيانات المرجعية عند أول تشغيل فقط.
+   *
+   * الخطأ السابق: كان الشرط `shipmentDao.getShipmentCount() == 0`، أي أن المركز
+   * إذا صفّر إرسالياته (زر «تصفير الإرساليات») عادت كل البيانات التجريبية —
+   * معامل وهمية وإرساليات ومدفوعات لمرضى غير حقيقيين — إلى دفاتره الفعلية عند
+   * التشغيل التالي. الآن يُستخدم علَم دائم لمرة واحدة، ولا تُبذر أي بيانات
+   * معاملات تجريبية إطلاقاً — فقط كتالوج أنواع الأعمال والإعدادات الأساسية.
+   *
+   * البيانات التجريبية الكاملة متاحة عند الطلب من الإعدادات عبر
+   * [resetToDefaultDemoData].
+   */
+  suspend fun seedReferenceDataIfNeeded(alreadySeeded: Boolean): Boolean {
+    if (alreadySeeded) return false
+    if (workTypeDao.getAllSync().isNotEmpty()) return true
+
+    workTypeDao.insertAll(DatabaseSeedData.defaultWorkTypes)
+    for (setting in DatabaseSeedData.defaultSettings) {
+      settingDao.setSetting(setting)
     }
+    return true
   }
 
   suspend fun resetToDefaultDemoData() {
@@ -64,7 +74,7 @@ class DentalLabRepository(private val database: AppDatabase) {
     inventoryDao.deleteAllItems()
     inventoryDao.deleteAllTransactions()
 
-    userDao.insertAll(DatabaseSeedData.defaultUsers)
+    userDao.insertAll(DatabaseSeedData.demoUsers())
     labDao.insertAll(DatabaseSeedData.defaultLabs)
     workTypeDao.insertAll(DatabaseSeedData.defaultWorkTypes)
     labPriceDao.insertAll(DatabaseSeedData.defaultLabPrices)
@@ -97,16 +107,26 @@ class DentalLabRepository(private val database: AppDatabase) {
     labDao.deleteAllLabs()
     workTypeDao.deleteAllWorkTypes()
 
-    // Ensure default admin user and essential default work types exist
-    val defaultAdmin = User(
-      id = 1,
-      username = "admin",
-      fullName = "المدير العام",
-      role = UserRole.ADMIN,
-      pinCode = "1234",
-      avatarColor = 0xFF00687A
+    // كان التصفير الكامل يترك المخزون وحركاته كما هي رغم أنه يُسمّى "تصفير كامل".
+    inventoryDao.deleteAllItems()
+    inventoryDao.deleteAllTransactions()
+
+    // لا يُعاد إنشاء حساب مدير برمز مرور ثابت ("1234" سابقاً) — يُعاد استخدام
+    // رمز مرور المدير الحالي حتى لا يفتح التصفير باباً خلفياً معروفاً للجميع.
+    val existingAdminHash = userDao.getAllSync()
+      .firstOrNull { it.role == UserRole.ADMIN }?.pinHash
+      ?: currentUser.pinHash
+
+    userDao.insert(
+      User(
+        id = 1,
+        username = currentUser.username.ifBlank { "admin" },
+        fullName = currentUser.fullName.ifBlank { "المدير العام" },
+        role = UserRole.ADMIN,
+        pinHash = existingAdminHash,
+        avatarColor = 0xFF00687A
+      )
     )
-    userDao.insert(defaultAdmin)
     workTypeDao.insertAll(DatabaseSeedData.defaultWorkTypes)
 
     logAudit(
@@ -151,6 +171,25 @@ class DentalLabRepository(private val database: AppDatabase) {
       entityId = user.id,
       entityType = "User"
     )
+  }
+
+  /**
+   * يحسب السعر من قائمة أسعار المعمل فقط إذا لم يُحدَّد سعر وحدة صريح.
+   * السعر الصفري يعني «احسبه لي»، وأي سعر موجب يعني «هذا هو السعر المعتمد».
+   */
+  private suspend fun withResolvedPricing(shipment: Shipment): Shipment {
+    if (shipment.unitPrice > 0.0) {
+      val total = ((shipment.unitPrice * shipment.pieceCount) - shipment.discount)
+        .coerceAtLeast(0.0)
+      return shipment.copy(totalPrice = total)
+    }
+    val (unitPrice, totalPrice) = calculatePrice(
+      labId = shipment.labId,
+      workTypeId = shipment.workTypeId,
+      pieceCount = shipment.pieceCount,
+      discount = shipment.discount
+    )
+    return shipment.copy(unitPrice = unitPrice, totalPrice = totalPrice)
   }
 
   // --- Smart Pricing Calculation ---
@@ -214,25 +253,38 @@ class DentalLabRepository(private val database: AppDatabase) {
   }
 
   // --- Shipments ---
+  /**
+   * توليد رقم إرسالية فريد.
+   *
+   * الخطأ السابق: كان الرقم = عدد الإرساليات + 126، فأي حذف لإرسالية واحدة كان
+   * يُنتج رقماً مكرراً لإرسالية موجودة أصلاً — أرقام متضاربة في الفواتير وكشوف
+   * حسابات المعامل. الآن يُشتق الرقم من أعلى رقم مستخدم فعلياً، مع فحص تصادم
+   * احتياطي.
+   */
   suspend fun generateNextShipmentNumber(): String {
-    val count = shipmentDao.getShipmentCount()
-    val nextNum = count + 125 + 1
-    return String.format(Locale.US, "#%06d", nextNum)
+    val used = shipmentDao.getAllSync()
+      .mapNotNull { it.shipmentNumber.filter { ch -> ch.isDigit() }.toIntOrNull() }
+    var next = (used.maxOrNull() ?: SHIPMENT_NUMBER_START) + 1
+    val usedSet = used.toSet()
+    while (next in usedSet) next++
+    return String.format(Locale.US, "#%06d", next)
   }
 
+  /**
+   * إنشاء إرسالية.
+   *
+   * الخطأ السابق: كانت الدالة تعيد حساب السعر من قائمة أسعار المعمل وتكتب فوق
+   * السعر المخصص الذي أدخله المستخدم يدوياً في الشاشة — فيُحفظ سعر مختلف عن
+   * الذي رآه ووافق عليه. الآن يُحترم السعر المخصص إن وُجد، ولا يُعاد الحساب إلا
+   * عندما لا يُمرَّر سعر صريح.
+   */
   suspend fun createShipment(shipment: Shipment, currentUser: User): Long {
-    val (unitPrice, totalPrice) = calculatePrice(
-      labId = shipment.labId,
-      workTypeId = shipment.workTypeId,
-      pieceCount = shipment.pieceCount,
-      discount = shipment.discount
-    )
-    val finalShipment = shipment.copy(
-      unitPrice = unitPrice,
-      totalPrice = totalPrice,
-      createdByUserId = currentUser.id,
-      createdByName = currentUser.fullName
-    )
+    val finalShipment = shipment
+      .let { withResolvedPricing(it) }
+      .copy(
+        createdByUserId = currentUser.id,
+        createdByName = currentUser.fullName
+      )
     val id = shipmentDao.insert(finalShipment)
     logAudit(
       user = currentUser,
@@ -245,13 +297,7 @@ class DentalLabRepository(private val database: AppDatabase) {
   }
 
   suspend fun updateShipment(shipment: Shipment, currentUser: User) {
-    val (unitPrice, totalPrice) = calculatePrice(
-      labId = shipment.labId,
-      workTypeId = shipment.workTypeId,
-      pieceCount = shipment.pieceCount,
-      discount = shipment.discount
-    )
-    val updated = shipment.copy(unitPrice = unitPrice, totalPrice = totalPrice)
+    val updated = withResolvedPricing(shipment)
     shipmentDao.update(updated)
     logAudit(
       user = currentUser,

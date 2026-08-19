@@ -19,11 +19,6 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.tasks.await
 import kotlinx.coroutines.withContext
-import okhttp3.MediaType.Companion.toMediaType
-import okhttp3.OkHttpClient
-import okhttp3.Request
-import okhttp3.RequestBody.Companion.toRequestBody
-import java.util.concurrent.TimeUnit
 
 class CloudSyncManager(
   private val context: Context,
@@ -32,6 +27,8 @@ class CloudSyncManager(
   companion object {
     private const val TAG = "CloudSyncManager"
     const val DEFAULT_CLINIC_ID = "clinic_aqlan_center"
+    /** عدد الإرساليات المرفوعة إلى مجموعة العرض الحيّ (النسخة الكاملة في backup_payloads). */
+    private const val FIRESTORE_LIVE_SHIPMENTS_LIMIT = 100
     const val DEFAULT_CLINIC_NAME = "مركز الدكتور عقلان الكامل لتقويم وزراعة وتجميل الأسنان"
   }
 
@@ -69,15 +66,14 @@ class CloudSyncManager(
           "clinicName" to _clinicName.value
         )
 
-        // Save under clinic's shipments subcollection
+        // Save under clinic's shipments subcollection only.
+        //
+        // ما أُزيل هنا: كانت نفس البيانات (بما فيها اسم المريض واسم الطبيب
+        // والمبالغ) تُكتب أيضاً في مجموعة عامة اسمها "all_shipments" خارج مسار
+        // المركز — أي خارج أي عزل بين العيادات، ومعرّفة بمسار يمكن تخمينه.
+        // بيانات المرضى يجب أن تبقى داخل مستند المركز وحده.
         clinicDocRef.collection("shipments")
           .document(shipment.id.toString())
-          .set(data, SetOptions.merge())
-          .await()
-
-        // Also save in global shipments index for live tracking
-        firestore.collection("all_shipments")
-          .document("${currentClinicId}_${shipment.id}")
           .set(data, SetOptions.merge())
           .await()
 
@@ -85,7 +81,9 @@ class CloudSyncManager(
         Log.d(TAG, "Successfully saved shipment ${shipment.shipmentNumber} to Firestore")
         Pair(true, "تم حفظ الإرسالية بنجاح ومزامنتها في Firebase Firestore السحابي (${shipment.shipmentNumber})")
       } else {
-        Pair(true, "تم الحفظ محلياً بنجاح (سيعاد المزامنة تلقائياً عند توفر الاتصال السحابي)")
+        // رسالة صادقة: لا توجد مزامنة مؤجلة ولا طابور إعادة إرسال — الخدمة
+        // السحابية ببساطة غير مهيأة على هذا التطبيق.
+        Pair(false, "تم الحفظ في الجهاز فقط — المزامنة السحابية غير مهيأة (ملف google-services.json غير موجود)")
       }
     } catch (e: Exception) {
       Log.e(TAG, "Error saving single shipment to Firestore", e)
@@ -98,12 +96,6 @@ class CloudSyncManager(
     .build()
 
   private val jsonAdapter = moshi.adapter(CloudBackupPayload::class.java)
-
-  private val httpClient = OkHttpClient.Builder()
-    .connectTimeout(15, TimeUnit.SECONDS)
-    .readTimeout(15, TimeUnit.SECONDS)
-    .writeTimeout(15, TimeUnit.SECONDS)
-    .build()
 
   // State flows
   private val _syncState = MutableStateFlow(SyncState.IDLE)
@@ -121,11 +113,12 @@ class CloudSyncManager(
   private val _clinicName = MutableStateFlow(DEFAULT_CLINIC_NAME)
   val clinicName: StateFlow<String> = _clinicName.asStateFlow()
 
-  private val _cloudServerUrl = MutableStateFlow("https://api.dentallab-cloud.com/v1")
-  val cloudServerUrl: StateFlow<String> = _cloudServerUrl.asStateFlow()
-
-  private val _apiKey = MutableStateFlow("demo_cloud_key_dentallab_2026")
-  val apiKey: StateFlow<String> = _apiKey.asStateFlow()
+  // أُزيل عمداً: كان التطبيق يحمل عنوان خادم خارجي ثابت
+  // ("https://api.dentallab-cloud.com/v1") ومفتاح API مكتوب داخل الكود، ويرسل
+  // نسخة كاملة من قاعدة البيانات — أسماء المرضى والأطباء وكل الحسابات المالية —
+  // إلى ذلك النطاق كلما كانت Firebase غير مهيأة (وهي غير مهيأة دائماً في هذا
+  // البناء). النطاق ليس ملكاً للمركز، وأي جهة تسجله لاحقاً كانت ستستقبل بيانات
+  // المرضى كاملة. لا يوجد الآن أي مسار رفع خارج Firebase الخاص بالمركز.
 
   private val _availableSnapshots = MutableStateFlow<List<FirestoreBackupSnapshot>>(emptyList())
   val availableSnapshots: StateFlow<List<FirestoreBackupSnapshot>> = _availableSnapshots.asStateFlow()
@@ -156,14 +149,12 @@ class CloudSyncManager(
     _clinicName.value = newClinicName.trim().ifEmpty { DEFAULT_CLINIC_NAME }
   }
 
-  fun updateServerConfig(url: String, key: String) {
-    _cloudServerUrl.value = url.trimEnd('/')
-    _apiKey.value = key.trim()
-  }
-
   fun setAutoSyncEnabled(enabled: Boolean) {
     _autoSyncEnabled.value = enabled
   }
+
+  /** هل الخدمة السحابية مهيأة فعلياً على هذا التطبيق؟ */
+  fun isCloudConfigured(): Boolean = isFirebaseAvailable()
 
   private fun isFirebaseAvailable(): Boolean {
     return try {
@@ -192,7 +183,10 @@ class CloudSyncManager(
       payments = database.paymentDao().getAllSync(),
       inventoryItems = database.inventoryDao().getAllSync(),
       inventoryTransactions = database.inventoryDao().getAllTransactionsSync(),
-      users = database.userDao().getAllSync()
+      // لا تُرفع حسابات المستخدمين إلى السحابة: السجل يحتوي على تجزئة رمز
+      // المرور، ورفعها يوسّع سطح الهجوم بلا فائدة تشغيلية. الحسابات تُدار
+      // محلياً من شاشة إدارة المستخدمين.
+      users = emptyList()
     )
   }
 
@@ -272,8 +266,10 @@ class CloudSyncManager(
         // 3. Batch sync core collections for multi-device live access
         val batch = firestore.batch()
 
-        // Sync Shipments to Firestore subcollection
-        payload.shipments.take(100).forEach { shipment ->
+        // ملاحظة: هذه المزامنة الجزئية للعرض متعدد الأجهزة فقط. النسخة الكاملة
+        // تُحفظ في backup_payloads أدناه. كان الحد 100 يُطبَّق بلا أي إشارة
+        // للمستخدم فيظن أن كل الإرساليات مرفوعة إلى Firestore.
+        payload.shipments.take(FIRESTORE_LIVE_SHIPMENTS_LIMIT).forEach { shipment ->
           val doc = clinicDocRef.collection("shipments").document(shipment.id.toString())
           val data = hashMapOf(
             "id" to shipment.id,
@@ -339,8 +335,16 @@ class CloudSyncManager(
 
         Log.d(TAG, "Successfully pushed Room DB to Firestore: ${payload.totalRecordCount} records.")
       } else {
-        // If Firebase is in offline/simulated mode, fallback to REST API / local snapshot
-        performHttpBackup(payload)
+        // فشل صريح بدل نجاح وهمي.
+        //
+        // الخطأ السابق الأخطر في هذا الملف: عند تعذر الرفع كانت الدالة البديلة
+        // تُرجع true ("Simulated success")، فتُظهر الشاشة للمستخدم «تمت المزامنة
+        // بنجاح» بينما لم تُرفع ولا بايت واحد. في تطبيق نسخ احتياطي لعيادة، هذا
+        // يعني أن المركز يظن أن بياناته محفوظة حتى يفقد الجهاز فيكتشف العكس.
+        _syncState.value = SyncState.ERROR
+        _syncMessage.value =
+          "تعذرت المزامنة: الخدمة السحابية غير مهيأة على هذا التطبيق. راجع دليل إعداد Firebase قبل الاعتماد على النسخ السحابي."
+        return@withContext false
       }
 
       _lastSyncTimestamp.value = timestamp
@@ -490,36 +494,24 @@ class CloudSyncManager(
     }
   }
 
-  private suspend fun performHttpBackup(payload: CloudBackupPayload): Boolean = withContext(Dispatchers.IO) {
-    try {
-      val jsonString = jsonAdapter.toJson(payload)
-      val url = "${_cloudServerUrl.value}/sync"
-      val requestBody = jsonString.toRequestBody("application/json; charset=utf-8".toMediaType())
-
-      val request = Request.Builder()
-        .url(url)
-        .addHeader("Authorization", "Bearer ${_apiKey.value}")
-        .addHeader("X-Clinic-ID", _clinicId.value)
-        .post(requestBody)
-        .build()
-
-      try {
-        httpClient.newCall(request).execute().use { response ->
-          response.isSuccessful
-        }
-      } catch (e: Exception) {
-        true // Simulated success for custom endpoints
-      }
-    } catch (e: Exception) {
-      false
-    }
-  }
-
   // --- External Sharing Helpers ---
+  /**
+   * رابط التتبع الإلكتروني للإرسالية.
+   *
+   * كان يُولَّد على نطاق "dentallab-online.app" وهو نطاق غير مملوك للمركز ولا
+   * توجد خلفه أي خدمة — أي أن كل رسالة واتساب تُرسل للمعامل كانت تحمل رابطاً
+   * ميتاً (وربما ينتهي لجهة أخرى تسجّل النطاق لاحقاً وتجمع أرقام الإرساليات).
+   * يعيد الآن سلسلة فارغة ما لم يُضبط نطاق تتبع حقيقي للمركز.
+   */
   fun generateOnlineTrackingUrl(shipment: Shipment): String {
-    val code = shipment.shipmentNumber.replace("#", "").ifEmpty { "TRK-${shipment.id + 1000}" }
-    return "https://dentallab-online.app/track/$code"
+    val base = trackingBaseUrl.trim().trimEnd('/')
+    if (base.isEmpty()) return ""
+    val code = shipment.shipmentNumber.replace("#", "").ifEmpty { shipment.id.toString() }
+    return "$base/track/$code"
   }
+
+  /** نطاق التتبع الخاص بالمركز — يُضبط عند توفر خدمة تتبع حقيقية. */
+  var trackingBaseUrl: String = ""
 
   fun shareViaWhatsApp(context: Context, phoneNumber: String, messageText: String) {
     try {

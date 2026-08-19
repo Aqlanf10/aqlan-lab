@@ -10,6 +10,9 @@ plugins {
 }
 
 android {
+  // ملاحظة: مساحة الاسم بقيت "com.example" لأن كل حزم الكود المصدري تحت هذا
+  // المسار؛ تغييرها يتطلب إعادة تسمية كل الحزم وهو تغيير واسع لا علاقة له
+  // بالأمان. المعرّف الفعلي للتطبيق على المتجر هو applicationId أدناه وهو صحيح.
   namespace = "com.example"
   compileSdk { version = release(36) { minorApiLevel = 1 } }
 
@@ -21,6 +24,13 @@ android {
     versionName = "1.0"
 
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+
+    // مكتبة قراءة الباركود (ML Kit) تحمل نموذجاً أصلياً لكل معمارية معالج،
+    // وأربع معماريات كانت تُضخّم الحزمة بنحو 12 ميغابايت بلا فائدة: أجهزة
+    // أندرويد الفعلية كلها ARM؛ معماريتا x86/x86_64 للمحاكيات فقط.
+    ndk {
+      abiFilters += listOf("arm64-v8a", "armeabi-v7a")
+    }
   }
 
   signingConfigs {
@@ -41,12 +51,20 @@ android {
 
   buildTypes {
     release {
-      isCrunchPngs = false
-      isMinifyEnabled = false
+      isCrunchPngs = true
+      // كان isMinifyEnabled = false: بناء الإصدار يخرج بأسماء أصناف ودوال
+      // ومسارات كاملة وواضحة، وبحجم أكبر، ويسهّل الهندسة العكسية للمنطق المالي
+      // ومسارات المصادقة. التفعيل يشغّل R8 للتصغير والتشويش وإزالة الكود الميت.
+      isMinifyEnabled = true
+      isShrinkResources = true
       proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
       signingConfig = signingConfigs.getByName("release")
     }
-    debug { signingConfig = signingConfigs.getByName("debugConfig") }
+    debug {
+      signingConfig = signingConfigs.getByName("debugConfig")
+      applicationIdSuffix = ".debug"
+      isMinifyEnabled = false
+    }
   }
   compileOptions {
     sourceCompatibility = JavaVersion.VERSION_11
@@ -80,6 +98,8 @@ dependencies {
   implementation(platform(libs.firebase.bom))
   // implementation(libs.accompanist.permissions)
   implementation(libs.androidx.activity.compose)
+  implementation(libs.androidx.biometric)
+  implementation(libs.androidx.fragment.ktx)
   implementation(libs.androidx.camera.camera2)
   implementation(libs.androidx.camera.core)
   implementation(libs.androidx.camera.lifecycle)
@@ -102,7 +122,8 @@ dependencies {
   implementation(libs.androidx.room.runtime)
   implementation(libs.coil.compose)
   implementation(libs.converter.moshi)
-  implementation(libs.firebase.ai)
+  // firebase-ai أُزيلت: لم تكن مستخدمة في أي سطر من التطبيق، وكانت تُضخّم حجم
+  // الحزمة وتضيف سطح خدمة (Gemini) بلا أي استعمال فعلي.
   // Uncomment to use Firestore & Storage:
   implementation(libs.firebase.firestore)
   implementation(libs.firebase.storage)
