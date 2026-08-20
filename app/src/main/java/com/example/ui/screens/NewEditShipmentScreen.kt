@@ -13,7 +13,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.*
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -60,6 +60,9 @@ fun NewEditShipmentScreen(
   }
   var patientName by remember(existingShipment) {
     mutableStateOf(existingShipment?.patientName ?: "")
+  }
+  var patientPhone by remember(existingShipment) {
+    mutableStateOf(existingShipment?.patientPhone ?: "")
   }
   var selectedLab by remember(existingShipment, activeLabs) {
     mutableStateOf(
@@ -192,6 +195,7 @@ fun NewEditShipmentScreen(
       val updated = existingShipment.copy(
         clinicOrDoctorName = clinicOrDoctorName.trim().ifEmpty { ClinicInfo.DOCTOR_NAME },
         patientName = patientName.trim(),
+        patientPhone = patientPhone.trim(),
         labId = selectedLab!!.id,
         labName = selectedLab!!.name,
         workTypeId = selectedWorkType!!.id,
@@ -225,6 +229,7 @@ fun NewEditShipmentScreen(
       viewModel.createShipmentWithFirestore(
         clinicOrDoctorName = clinicOrDoctorName.trim().ifEmpty { ClinicInfo.DOCTOR_NAME },
         patientName = patientName.trim(),
+        patientPhone = patientPhone.trim(),
         labId = selectedLab!!.id,
         labName = selectedLab!!.name,
         workTypeId = selectedWorkType!!.id,
@@ -447,6 +452,20 @@ fun NewEditShipmentScreen(
             modifier = Modifier
               .fillMaxWidth()
               .testTag("patient_input"),
+            singleLine = true
+          )
+
+          // Patient WhatsApp Phone Input
+          OutlinedTextField(
+            value = patientPhone,
+            onValueChange = { patientPhone = it },
+            label = { Text("رقم واتساب المريض (اختياري - للإشعارات والفواتير)") },
+            placeholder = { Text("77xxxxxxx") },
+            leadingIcon = { Icon(Icons.AutoMirrored.Filled.Send, contentDescription = null, tint = Color(0xFF15803D)) },
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone),
+            modifier = Modifier
+              .fillMaxWidth()
+              .testTag("patient_phone_input"),
             singleLine = true
           )
 

@@ -55,6 +55,7 @@ fun DashboardScreen(
   onNavigateToAuditLog: () -> Unit,
   onNavigateToCloudSync: () -> Unit = {},
   onNavigateToQrScanner: () -> Unit = {},
+  onNavigateToWhatsApp: () -> Unit = {},
   onOpenUserSwitchDialog: () -> Unit,
   modifier: Modifier = Modifier
 ) {
@@ -210,6 +211,34 @@ fun DashboardScreen(
                   contentDescription = "المزامنة السحابية",
                   tint = if (isOnline) Color(0xFF2E7D32) else MaterialTheme.colorScheme.error
                 )
+              }
+
+              // WhatsApp Notifications & Invoices Hub
+              Box {
+                IconButton(
+                  onClick = onNavigateToWhatsApp,
+                  modifier = Modifier
+                    .testTag("dashboard_whatsapp_btn")
+                    .size(40.dp)
+                ) {
+                  Icon(
+                    imageVector = Icons.AutoMirrored.Filled.Send,
+                    contentDescription = "إشعارات وفواتير الواتساب",
+                    tint = Color(0xFF15803D)
+                  )
+                }
+
+                if (readyShipments.isNotEmpty()) {
+                  Badge(
+                    containerColor = Color(0xFF22C55E),
+                    contentColor = Color.White,
+                    modifier = Modifier
+                      .align(Alignment.TopEnd)
+                      .offset(x = (-4).dp, y = 4.dp)
+                  ) {
+                    Text("${readyShipments.size}", fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                  }
+                }
               }
 
               // Analytics & Trends Chart Button
@@ -539,10 +568,82 @@ fun DashboardScreen(
               }
 
               QuickActionButton(
+                title = "الواتساب",
+                icon = Icons.AutoMirrored.Filled.Send,
+                tint = Color(0xFF15803D),
+                onClick = onNavigateToWhatsApp
+              )
+
+              QuickActionButton(
                 title = "التقارير",
                 icon = Icons.Default.BarChart,
                 tint = Color(0xFFE65100),
                 onClick = onNavigateToReports
+              )
+            }
+          }
+        }
+      }
+
+      // WhatsApp Ready Cases Prompt Card (if any ready cases available)
+      if (readyShipments.isNotEmpty()) {
+        item {
+          Card(
+            shape = RoundedCornerShape(16.dp),
+            colors = CardDefaults.cardColors(containerColor = Color(0xFFF0FDF4)),
+            border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF86EFAC)),
+            modifier = Modifier
+              .fillMaxWidth()
+              .clickable { onNavigateToWhatsApp() }
+              .testTag("dashboard_ready_cases_whatsapp_card")
+          ) {
+            Row(
+              modifier = Modifier
+                .fillMaxWidth()
+                .padding(14.dp),
+              verticalAlignment = Alignment.CenterVertically,
+              horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+              Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                modifier = Modifier.weight(1f)
+              ) {
+                Surface(
+                  shape = CircleShape,
+                  color = Color(0xFF25D366),
+                  modifier = Modifier.size(38.dp)
+                ) {
+                  Box(contentAlignment = Alignment.Center) {
+                    Icon(
+                      imageVector = Icons.AutoMirrored.Filled.Send,
+                      contentDescription = null,
+                      tint = Color.White,
+                      modifier = Modifier.size(18.dp)
+                    )
+                  }
+                }
+
+                Column {
+                  Text(
+                    text = "يوجد ${readyShipments.size} حالات جاهزة للتركيب 🦷",
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 13.sp,
+                    color = Color(0xFF14532D)
+                  )
+                  Text(
+                    text = "اضغط هنا لإرسال رسائل وتنبيهات جاهزية للمرضى عبر الواتساب فوراً",
+                    fontSize = 11.sp,
+                    color = Color(0xFF166534)
+                  )
+                }
+              }
+
+              Icon(
+                imageVector = Icons.AutoMirrored.Filled.ArrowForward,
+                contentDescription = null,
+                tint = Color(0xFF15803D),
+                modifier = Modifier.size(18.dp)
               )
             }
           }

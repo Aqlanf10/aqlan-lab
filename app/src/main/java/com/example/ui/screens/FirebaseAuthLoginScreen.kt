@@ -24,9 +24,11 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusDirection
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
@@ -35,6 +37,8 @@ import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.example.data.models.DeviceBinding
+import com.example.data.models.DeviceStatus
 import com.example.data.models.UserRole
 import com.example.network.AuthUiState
 import com.example.ui.components.AqlanLogo
@@ -51,23 +55,21 @@ fun FirebaseAuthLoginScreen(
 ) {
   val context = LocalContext.current
   val focusManager = LocalFocusManager.current
+  val clipboardManager = LocalClipboardManager.current
   val coroutineScope = rememberCoroutineScope()
 
   val authState by viewModel.firebaseAuthState.collectAsState()
   val currentUser by viewModel.firebaseCurrentUser.collectAsState()
+  val currentDeviceBinding by viewModel.currentDeviceBinding.collectAsState()
+  val allDevices by viewModel.allDevices.collectAsState()
 
-  var selectedTab by remember { mutableIntStateOf(0) } // 0: Login, 1: Doctor PIN, 2: Register Staff
+  var selectedTab by remember { mutableIntStateOf(0) } // 0: Private Login, 1: Doctor PIN, 2: Device Hardware Licensing
 
   // Login Form States
-  var emailInput by remember { mutableStateOf("Aqlanf10@gmail.com") }
+  var usernameOrEmailInput by remember { mutableStateOf("aqlan") }
   var passwordInput by remember { mutableStateOf("") }
   var isPasswordVisible by remember { mutableStateOf(false) }
-
-  // Register Form States
-  var regFullName by remember { mutableStateOf("") }
-  var regEmail by remember { mutableStateOf("") }
-  var regPassword by remember { mutableStateOf("") }
-  var regRole by remember { mutableStateOf(UserRole.STAFF) }
+  var isAuthenticatingLocally by remember { mutableStateOf(false) }
 
   // Quick Doctor PIN State
   var doctorPinInput by remember { mutableStateOf("") }
@@ -84,15 +86,19 @@ fun FirebaseAuthLoginScreen(
     }
   }
 
+  val currentDeviceId = viewModel.currentDeviceId
+  val currentDevice = currentDeviceBinding ?: allDevices.find { it.deviceId == currentDeviceId }
+  val deviceStatus = currentDevice?.status ?: DeviceStatus.PENDING
+
   Box(
     modifier = modifier
       .fillMaxSize()
       .background(
         Brush.verticalGradient(
           colors = listOf(
-            Color(0xFF0F172A),
-            Color(0xFF1E293B),
-            Color(0xFF0B192C)
+            Color(0xFF0A0F1D),
+            Color(0xFF131E35),
+            Color(0xFF0F172A)
           )
         )
       )
@@ -104,16 +110,15 @@ fun FirebaseAuthLoginScreen(
         .padding(horizontal = 20.dp, vertical = 24.dp),
       horizontalAlignment = Alignment.CenterHorizontally
     ) {
-      // 1. Official Header & Crest
+      // 1. Official Private System Crest
       Column(
         horizontalAlignment = Alignment.CenterHorizontally,
-        modifier = Modifier.padding(top = 12.dp, bottom = 16.dp)
+        modifier = Modifier.padding(top = 10.dp, bottom = 14.dp)
       ) {
-        // Firebase Protected Shield Badge
         Surface(
           shape = RoundedCornerShape(20.dp),
-          color = Color(0xFF1E3A8A).copy(alpha = 0.7f),
-          border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF60A5FA).copy(alpha = 0.5f)),
+          color = Color(0xFF0284C7).copy(alpha = 0.2f),
+          border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF38BDF8).copy(alpha = 0.6f)),
           modifier = Modifier.padding(bottom = 12.dp)
         ) {
           Row(
@@ -122,26 +127,26 @@ fun FirebaseAuthLoginScreen(
             horizontalArrangement = Arrangement.spacedBy(6.dp)
           ) {
             Icon(
-              imageVector = Icons.Default.Shield,
+              imageVector = Icons.Default.VpnKey,
               contentDescription = null,
               tint = Color(0xFF38BDF8),
               modifier = Modifier.size(16.dp)
             )
             Text(
-              text = "محمي بالمصادقة السحابية (Firebase Auth)",
+              text = "نظام خاص مغلق ومحمي (Private Access System)",
               fontSize = 11.sp,
               fontWeight = FontWeight.Bold,
-              color = Color(0xFFF1F5F9)
+              color = Color(0xFFE0F2FE)
             )
           }
         }
 
-        AqlanLogo(size = 72.dp)
+        AqlanLogo(size = 68.dp)
 
-        Spacer(Modifier.height(10.dp))
+        Spacer(Modifier.height(8.dp))
 
         Text(
-          text = "بوابة الدخول لنظام إدارة المعامل",
+          text = "بوابة الوصول الحصري - معمل د. عقلان",
           style = MaterialTheme.typography.titleLarge,
           fontWeight = FontWeight.ExtraBold,
           color = Color.White,
@@ -149,7 +154,7 @@ fun FirebaseAuthLoginScreen(
         )
 
         Text(
-          text = ClinicInfo.CLINIC_NAME,
+          text = "${ClinicInfo.CLINIC_NAME} - بإشراف ${ClinicInfo.DOCTOR_NAME}",
           style = MaterialTheme.typography.bodySmall,
           color = Color(0xFF94A3B8),
           textAlign = TextAlign.Center,
@@ -157,7 +162,7 @@ fun FirebaseAuthLoginScreen(
         )
       }
 
-      // 2. Navigation Tabs
+      // 2. Navigation Tabs (Private Access & Hardware Security)
       TabRow(
         selectedTabIndex = selectedTab,
         containerColor = Color(0xFF1E293B),
@@ -175,24 +180,24 @@ fun FirebaseAuthLoginScreen(
         Tab(
           selected = selectedTab == 1,
           onClick = { selectedTab = 1 },
-          text = { Text("رمز الطبيب", fontWeight = FontWeight.Bold, fontSize = 12.sp) },
+          text = { Text("رمز المشرف", fontWeight = FontWeight.Bold, fontSize = 12.sp) },
           icon = { Icon(Icons.Default.Pin, contentDescription = null, modifier = Modifier.size(18.dp)) }
         )
         Tab(
           selected = selectedTab == 2,
           onClick = { selectedTab = 2 },
-          text = { Text("تسجيل موظف", fontWeight = FontWeight.Bold, fontSize = 12.sp) },
-          icon = { Icon(Icons.Default.PersonAdd, contentDescription = null, modifier = Modifier.size(18.dp)) }
+          text = { Text("ترخيص الجهاز", fontWeight = FontWeight.Bold, fontSize = 12.sp) },
+          icon = { Icon(Icons.Default.Devices, contentDescription = null, modifier = Modifier.size(18.dp)) }
         )
       }
 
       Spacer(Modifier.height(16.dp))
 
-      // 3. Error or Unauthorized Feedback Banner
+      // 3. Error / Status Banner
       when (val state = authState) {
         is AuthUiState.Error -> {
           Surface(
-            color = Color(0xFF7F1D1D).copy(alpha = 0.8f),
+            color = Color(0xFF7F1D1D).copy(alpha = 0.9f),
             border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFFEF4444)),
             shape = RoundedCornerShape(12.dp),
             modifier = Modifier.fillMaxWidth().padding(bottom = 14.dp)
@@ -214,17 +219,58 @@ fun FirebaseAuthLoginScreen(
         }
         is AuthUiState.Unauthorized -> {
           Surface(
-            color = Color(0xFF854D0E).copy(alpha = 0.8f),
+            color = Color(0xFF854D0E).copy(alpha = 0.9f),
             border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFFF59E0B)),
             shape = RoundedCornerShape(12.dp),
             modifier = Modifier.fillMaxWidth().padding(bottom = 14.dp)
           ) {
             Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
               Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Icon(Icons.Default.Warning, contentDescription = null, tint = Color(0xFFFDE047))
-                Text("حساب غير مصرح له!", fontWeight = FontWeight.Bold, color = Color(0xFFFEF08A))
+                Icon(Icons.Default.Security, contentDescription = null, tint = Color(0xFFFDE047))
+                Text("حساب غير مصرح له أو معلق!", fontWeight = FontWeight.Bold, color = Color(0xFFFEF08A))
               }
               Text(state.message, color = Color(0xFFFEF9C3), fontSize = 12.sp)
+            }
+          }
+        }
+        is AuthUiState.DevicePendingApproval -> {
+          Surface(
+            color = Color(0xFF1E3A8A).copy(alpha = 0.9f),
+            border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF60A5FA)),
+            shape = RoundedCornerShape(12.dp),
+            modifier = Modifier.fillMaxWidth().padding(bottom = 14.dp)
+          ) {
+            Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+              Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Icon(Icons.Default.HourglassTop, contentDescription = null, tint = Color(0xFF93C5FD))
+                Text("هذا الجهاز قيد المراجعة والاعتماد", fontWeight = FontWeight.Bold, color = Color.White)
+              }
+              Text(
+                text = "تم تسجيل طلب الترخيص للجهاز (${state.deviceId}). يرجى من المشرف العام ${ClinicInfo.DOCTOR_NAME} تفعيل الجهاز من لوحة إدارة الأجهزة.",
+                color = Color(0xFFDBEAFE),
+                fontSize = 12.sp
+              )
+            }
+          }
+        }
+        is AuthUiState.AccountDisabled -> {
+          Surface(
+            color = Color(0xFF7F1D1D).copy(alpha = 0.9f),
+            border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFFEF4444)),
+            shape = RoundedCornerShape(12.dp),
+            modifier = Modifier.fillMaxWidth().padding(bottom = 14.dp)
+          ) {
+            Row(
+              modifier = Modifier.padding(12.dp),
+              verticalAlignment = Alignment.CenterVertically,
+              horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+              Icon(Icons.Default.Block, contentDescription = null, tint = Color(0xFFFCA5A5))
+              Text(
+                text = "تم تعطيل حساب (${state.user.fullName}) بواسطة المشرف العام. يُرجى مراجعة إدارة المعمل.",
+                color = Color(0xFFFEE2E2),
+                fontSize = 12.sp
+              )
             }
           }
         }
@@ -234,7 +280,7 @@ fun FirebaseAuthLoginScreen(
       // 4. Tab Content
       when (selectedTab) {
         0 -> {
-          // --- TAB 0: Email / Password Sign In ---
+          // --- TAB 0: Private Access Sign In ---
           Card(
             shape = RoundedCornerShape(16.dp),
             colors = CardDefaults.cardColors(containerColor = Color(0xFF1E293B)),
@@ -245,23 +291,49 @@ fun FirebaseAuthLoginScreen(
               modifier = Modifier.padding(18.dp),
               verticalArrangement = Arrangement.spacedBy(14.dp)
             ) {
+              Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween,
+                modifier = Modifier.fillMaxWidth()
+              ) {
+                Text(
+                  text = "تسجيل الدخول للمصرح لهم فقط",
+                  fontWeight = FontWeight.Bold,
+                  color = Color(0xFFF8FAFC),
+                  fontSize = 15.sp
+                )
+                Surface(
+                  shape = RoundedCornerShape(6.dp),
+                  color = Color(0xFF047857).copy(alpha = 0.3f),
+                  border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF10B981))
+                ) {
+                  Text(
+                    text = "🔒 وصول خاص",
+                    fontSize = 10.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = Color(0xFF34D399),
+                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                  )
+                }
+              }
+
               Text(
-                text = "تسجيل الدخول بحساب معتمد",
-                fontWeight = FontWeight.Bold,
-                color = Color(0xFFF8FAFC),
-                fontSize = 15.sp
+                text = "الحسابات يتم إنشاؤها وتفعيلها حصراً من قبل المشرف العام (د. عقلان). التسجيل العام معطل تماماً.",
+                fontSize = 11.sp,
+                color = Color(0xFF94A3B8),
+                lineHeight = 16.sp
               )
 
-              // Email Field
+              // Username / Email Field
               OutlinedTextField(
-                value = emailInput,
-                onValueChange = { emailInput = it },
-                label = { Text("البريد الإلكتروني") },
-                placeholder = { Text("example@gmail.com") },
+                value = usernameOrEmailInput,
+                onValueChange = { usernameOrEmailInput = it },
+                label = { Text("اسم المستخدم أو البريد المعتمد") },
+                placeholder = { Text("aqlan أو staff1") },
                 singleLine = true,
-                leadingIcon = { Icon(Icons.Default.Email, contentDescription = null, tint = Color(0xFF94A3B8)) },
+                leadingIcon = { Icon(Icons.Default.AccountCircle, contentDescription = null, tint = Color(0xFF38BDF8)) },
                 keyboardOptions = KeyboardOptions(
-                  keyboardType = KeyboardType.Email,
+                  keyboardType = KeyboardType.Text,
                   imeAction = ImeAction.Next
                 ),
                 keyboardActions = KeyboardActions(onNext = { focusManager.moveFocus(FocusDirection.Down) }),
@@ -276,13 +348,13 @@ fun FirebaseAuthLoginScreen(
                 modifier = Modifier.fillMaxWidth().testTag("auth_email_input")
               )
 
-              // Password Field
+              // Password / PIN Field
               OutlinedTextField(
                 value = passwordInput,
                 onValueChange = { passwordInput = it },
-                label = { Text("كلمة المرور") },
+                label = { Text("كلمة المرور / الرمز السري") },
                 singleLine = true,
-                leadingIcon = { Icon(Icons.Default.Lock, contentDescription = null, tint = Color(0xFF94A3B8)) },
+                leadingIcon = { Icon(Icons.Default.Lock, contentDescription = null, tint = Color(0xFF38BDF8)) },
                 trailingIcon = {
                   IconButton(onClick = { isPasswordVisible = !isPasswordVisible }) {
                     Icon(
@@ -299,8 +371,13 @@ fun FirebaseAuthLoginScreen(
                 ),
                 keyboardActions = KeyboardActions(onDone = {
                   focusManager.clearFocus()
-                  if (emailInput.isNotBlank() && passwordInput.isNotBlank()) {
-                    viewModel.signInWithFirebaseEmail(emailInput, passwordInput)
+                  if (usernameOrEmailInput.isNotBlank()) {
+                    isAuthenticatingLocally = true
+                    viewModel.signInWithPrivateAccount(usernameOrEmailInput, passwordInput) { success, msg ->
+                      isAuthenticatingLocally = false
+                      Toast.makeText(context, msg, if (success) Toast.LENGTH_SHORT else Toast.LENGTH_LONG).show()
+                      if (success) onLoginSuccess()
+                    }
                   }
                 }),
                 colors = OutlinedTextFieldDefaults.colors(
@@ -314,21 +391,21 @@ fun FirebaseAuthLoginScreen(
                 modifier = Modifier.fillMaxWidth().testTag("auth_password_input")
               )
 
-              // Forgot Password link
+              // Forgot Password link & Super Admin indicator
               Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
               ) {
                 Text(
-                  text = "المالك: Aqlanf10@gmail.com",
+                  text = "المشرف العام: د. عقلان",
                   fontSize = 11.sp,
                   color = Color(0xFF64748B)
                 )
 
                 TextButton(
                   onClick = {
-                    resetEmailInput = emailInput
+                    resetEmailInput = if (usernameOrEmailInput.contains("@")) usernameOrEmailInput else ClinicInfo.EMAIL
                     showForgotPasswordDialog = true
                   },
                   contentPadding = PaddingValues(0.dp)
@@ -341,25 +418,30 @@ fun FirebaseAuthLoginScreen(
               Button(
                 onClick = {
                   focusManager.clearFocus()
-                  if (emailInput.isBlank() || passwordInput.isBlank()) {
-                    Toast.makeText(context, "يرجى كتابة البريد وكلمة المرور", Toast.LENGTH_SHORT).show()
+                  if (usernameOrEmailInput.isBlank()) {
+                    Toast.makeText(context, "يرجى إدخال اسم المستخدم أو البريد", Toast.LENGTH_SHORT).show()
                   } else {
-                    viewModel.signInWithFirebaseEmail(emailInput, passwordInput)
+                    isAuthenticatingLocally = true
+                    viewModel.signInWithPrivateAccount(usernameOrEmailInput, passwordInput) { success, msg ->
+                      isAuthenticatingLocally = false
+                      Toast.makeText(context, msg, if (success) Toast.LENGTH_SHORT else Toast.LENGTH_LONG).show()
+                      if (success) onLoginSuccess()
+                    }
                   }
                 },
-                enabled = authState !is AuthUiState.Loading,
-                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2563EB)),
+                enabled = authState !is AuthUiState.Loading && !isAuthenticatingLocally,
+                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF0284C7)),
                 shape = RoundedCornerShape(10.dp),
                 modifier = Modifier.fillMaxWidth().height(48.dp).testTag("auth_login_btn")
               ) {
-                if (authState is AuthUiState.Loading) {
+                if (authState is AuthUiState.Loading || isAuthenticatingLocally) {
                   CircularProgressIndicator(color = Color.White, modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
                   Spacer(Modifier.width(8.dp))
-                  Text("جاري التحقق والمصادقة...")
+                  Text("جاري التحقق من الترخيص...")
                 } else {
                   Icon(Icons.Default.Login, contentDescription = null, modifier = Modifier.size(18.dp))
                   Spacer(Modifier.width(8.dp))
-                  Text("تسجيل الدخول المعتمد", fontWeight = FontWeight.Bold)
+                  Text("تسجيل الدخول للنظام", fontWeight = FontWeight.Bold)
                 }
               }
 
@@ -370,14 +452,14 @@ fun FirebaseAuthLoginScreen(
               ) {
                 HorizontalDivider(modifier = Modifier.weight(1f), color = Color(0xFF334155))
                 Text(
-                  text = "  أو عبر خدمات Google  ",
+                  text = "  أو حساب المشرف عبر Google  ",
                   fontSize = 11.sp,
                   color = Color(0xFF64748B)
                 )
                 HorizontalDivider(modifier = Modifier.weight(1f), color = Color(0xFF334155))
               }
 
-              // Google Sign-In Button
+              // Google Sign-In Button (Super Admin / Whitelisted Accounts)
               OutlinedButton(
                 onClick = {
                   viewModel.signInWithGoogle(context)
@@ -394,14 +476,14 @@ fun FirebaseAuthLoginScreen(
                   modifier = Modifier.size(20.dp)
                 )
                 Spacer(Modifier.width(8.dp))
-                Text("تسجيل الدخول عبر Google", fontWeight = FontWeight.SemiBold)
+                Text("تسجيل الدخول السريع عبر Google", fontWeight = FontWeight.SemiBold)
               }
             }
           }
         }
 
         1 -> {
-          // --- TAB 1: Doctor Fast PIN ---
+          // --- TAB 1: Super Admin Fast Access PIN ---
           Card(
             shape = RoundedCornerShape(16.dp),
             colors = CardDefaults.cardColors(containerColor = Color(0xFF1E293B)),
@@ -430,14 +512,14 @@ fun FirebaseAuthLoginScreen(
               }
 
               Text(
-                text = "الدخول السريع لـ ${ClinicInfo.DOCTOR_NAME}",
+                text = "الدخول المباشر للمشرف العام (د. عقلان)",
                 fontWeight = FontWeight.Bold,
                 color = Color(0xFFF8FAFC),
                 fontSize = 15.sp
               )
 
               Text(
-                text = "للاستخدام المباشر داخل العيادة، يمكنك استخدام رمز المرور السري للدكتور (الافتراضي: 1111)",
+                text = "خاص بالطبيب المالك للدخول السريع والفوري بكلمة المرور السريعة",
                 style = MaterialTheme.typography.bodySmall,
                 color = Color(0xFF94A3B8),
                 textAlign = TextAlign.Center
@@ -446,7 +528,7 @@ fun FirebaseAuthLoginScreen(
               OutlinedTextField(
                 value = doctorPinInput,
                 onValueChange = { doctorPinInput = it },
-                label = { Text("رمز مرور الطبيب / PIN") },
+                label = { Text("رمز مرور المشرف العام / PIN") },
                 singleLine = true,
                 visualTransformation = PasswordVisualTransformation(),
                 keyboardOptions = KeyboardOptions(
@@ -456,7 +538,7 @@ fun FirebaseAuthLoginScreen(
                 keyboardActions = KeyboardActions(onDone = {
                   focusManager.clearFocus()
                   if (viewModel.unlockAppWithPin(doctorPinInput)) {
-                    Toast.makeText(context, "مرحباً د. عقلان الكامل", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(context, "مرحباً د. عقلان الكامل (المشرف العام)", Toast.LENGTH_SHORT).show()
                     onLoginSuccess()
                   } else {
                     Toast.makeText(context, "رمز المرور غير صحيح", Toast.LENGTH_SHORT).show()
@@ -477,7 +559,7 @@ fun FirebaseAuthLoginScreen(
                 onClick = {
                   focusManager.clearFocus()
                   if (viewModel.unlockAppWithPin(doctorPinInput)) {
-                    Toast.makeText(context, "مرحباً د. عقلان الكامل", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(context, "مرحباً د. عقلان الكامل (المشرف العام)", Toast.LENGTH_SHORT).show()
                     onLoginSuccess()
                   } else {
                     Toast.makeText(context, "رمز المرور غير صحيح", Toast.LENGTH_SHORT).show()
@@ -489,7 +571,7 @@ fun FirebaseAuthLoginScreen(
               ) {
                 Icon(Icons.Default.Check, contentDescription = null, modifier = Modifier.size(18.dp))
                 Spacer(Modifier.width(8.dp))
-                Text("فتح النظام كطبيب مسؤول", fontWeight = FontWeight.Bold)
+                Text("فتح النظام بصلاحية Super Admin", fontWeight = FontWeight.Bold)
               }
 
               // Biometric option
@@ -504,14 +586,14 @@ fun FirebaseAuthLoginScreen(
               ) {
                 Icon(Icons.Default.Fingerprint, contentDescription = null, tint = Color(0xFF60A5FA), modifier = Modifier.size(20.dp))
                 Spacer(Modifier.width(8.dp))
-                Text("الدخول عبر البصمة البيومترية 👆", color = Color(0xFFE2E8F0))
+                Text("الدخول بالبصمة الحيوية (Biometric)", color = Color(0xFFE2E8F0))
               }
             }
           }
         }
 
         2 -> {
-          // --- TAB 2: Register Staff Account ---
+          // --- TAB 2: Device Hardware Licensing Card ---
           Card(
             shape = RoundedCornerShape(16.dp),
             colors = CardDefaults.cardColors(containerColor = Color(0xFF1E293B)),
@@ -522,104 +604,153 @@ fun FirebaseAuthLoginScreen(
               modifier = Modifier.padding(18.dp),
               verticalArrangement = Arrangement.spacedBy(14.dp)
             ) {
-              Text(
-                text = "تسجيل موظف أو فني جديد في المركز",
-                fontWeight = FontWeight.Bold,
-                color = Color(0xFFF8FAFC),
-                fontSize = 15.sp
-              )
-
-              // Staff Full Name
-              OutlinedTextField(
-                value = regFullName,
-                onValueChange = { regFullName = it },
-                label = { Text("الاسم الكامل للموظف") },
-                singleLine = true,
-                leadingIcon = { Icon(Icons.Default.Person, contentDescription = null, tint = Color(0xFF94A3B8)) },
-                colors = OutlinedTextFieldDefaults.colors(
-                  focusedBorderColor = Color(0xFF38BDF8),
-                  unfocusedBorderColor = Color(0xFF475569),
-                  focusedTextColor = Color.White,
-                  unfocusedTextColor = Color.White
-                ),
-                modifier = Modifier.fillMaxWidth().testTag("reg_fullname_input")
-              )
-
-              // Staff Email
-              OutlinedTextField(
-                value = regEmail,
-                onValueChange = { regEmail = it },
-                label = { Text("البريد الإلكتروني للموظف") },
-                singleLine = true,
-                leadingIcon = { Icon(Icons.Default.Email, contentDescription = null, tint = Color(0xFF94A3B8)) },
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email),
-                colors = OutlinedTextFieldDefaults.colors(
-                  focusedBorderColor = Color(0xFF38BDF8),
-                  unfocusedBorderColor = Color(0xFF475569),
-                  focusedTextColor = Color.White,
-                  unfocusedTextColor = Color.White
-                ),
-                modifier = Modifier.fillMaxWidth().testTag("reg_email_input")
-              )
-
-              // Staff Password
-              OutlinedTextField(
-                value = regPassword,
-                onValueChange = { regPassword = it },
-                label = { Text("كلمة المرور (6 خانات على الأقل)") },
-                singleLine = true,
-                leadingIcon = { Icon(Icons.Default.Lock, contentDescription = null, tint = Color(0xFF94A3B8)) },
-                visualTransformation = PasswordVisualTransformation(),
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
-                colors = OutlinedTextFieldDefaults.colors(
-                  focusedBorderColor = Color(0xFF38BDF8),
-                  unfocusedBorderColor = Color(0xFF475569),
-                  focusedTextColor = Color.White,
-                  unfocusedTextColor = Color.White
-                ),
-                modifier = Modifier.fillMaxWidth().testTag("reg_password_input")
-              )
-
-              // Staff Role Selector
-              Text("صلاحية الموظف في النظام:", fontSize = 12.sp, color = Color(0xFF94A3B8))
               Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween,
+                modifier = Modifier.fillMaxWidth()
               ) {
-                listOf(UserRole.STAFF to "موظف استقبال / فني", UserRole.ACCOUNTANT to "محاسب مالي").forEach { (role, label) ->
-                  FilterChip(
-                    selected = regRole == role,
-                    onClick = { regRole = role },
-                    label = { Text(label, fontSize = 11.sp, fontWeight = FontWeight.Bold) },
-                    colors = FilterChipDefaults.filterChipColors(
-                      selectedContainerColor = Color(0xFF2563EB),
-                      selectedLabelColor = Color.White
-                    )
+                Text(
+                  text = "بصمة الجهاز والترخيص Hardware ID",
+                  fontWeight = FontWeight.Bold,
+                  color = Color(0xFFF8FAFC),
+                  fontSize = 15.sp
+                )
+                Surface(
+                  shape = RoundedCornerShape(6.dp),
+                  color = when (deviceStatus) {
+                    DeviceStatus.APPROVED -> Color(0xFF047857).copy(alpha = 0.3f)
+                    DeviceStatus.BLOCKED, DeviceStatus.REVOKED -> Color(0xFFB91C1C).copy(alpha = 0.3f)
+                    else -> Color(0xFFD97706).copy(alpha = 0.3f)
+                  },
+                  border = androidx.compose.foundation.BorderStroke(
+                    1.dp,
+                    when (deviceStatus) {
+                      DeviceStatus.APPROVED -> Color(0xFF10B981)
+                      DeviceStatus.BLOCKED, DeviceStatus.REVOKED -> Color(0xFFEF4444)
+                      else -> Color(0xFFF59E0B)
+                    }
+                  )
+                ) {
+                  Text(
+                    text = deviceStatus.titleAr,
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = when (deviceStatus) {
+                      DeviceStatus.APPROVED -> Color(0xFF34D399)
+                      DeviceStatus.BLOCKED, DeviceStatus.REVOKED -> Color(0xFFF87171)
+                      else -> Color(0xFFFBBF24)
+                    },
+                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
                   )
                 }
               }
 
-              // Register Button
+              Text(
+                text = "كل جهاز يحتاج إلى موافقة وترخيص مباشر من المشرف العام لضمان عدم تسريب البيانات أو الاستخدام من أجهزة غير مصرح بها.",
+                fontSize = 12.sp,
+                color = Color(0xFF94A3B8),
+                lineHeight = 17.sp
+              )
+
+              // Hardware Info Box
+              Surface(
+                shape = RoundedCornerShape(10.dp),
+                color = Color(0xFF0F172A),
+                border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF334155)),
+                modifier = Modifier.fillMaxWidth()
+              ) {
+                Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                  Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                  ) {
+                    Text("معرف الجهاز (Device ID):", fontSize = 11.sp, color = Color(0xFF94A3B8))
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                      Text(
+                        text = currentDeviceId,
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = Color(0xFF38BDF8)
+                      )
+                      IconButton(
+                        onClick = {
+                          clipboardManager.setText(AnnotatedString(currentDeviceId))
+                          Toast.makeText(context, "تم نسخ معرف الجهاز بنجاح", Toast.LENGTH_SHORT).show()
+                        },
+                        modifier = Modifier.size(28.dp)
+                      ) {
+                        Icon(Icons.Default.ContentCopy, contentDescription = "نسخ", tint = Color(0xFF94A3B8), modifier = Modifier.size(14.dp))
+                      }
+                    }
+                  }
+
+                  HorizontalDivider(color = Color(0xFF1E293B))
+
+                  Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween
+                  ) {
+                    Text("نوع الجهاز وطرازه:", fontSize = 11.sp, color = Color(0xFF94A3B8))
+                    Text(
+                      text = viewModel.deviceSecurityManager.getDeviceModelName(),
+                      fontSize = 11.sp,
+                      fontWeight = FontWeight.SemiBold,
+                      color = Color.White
+                    )
+                  }
+
+                  Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween
+                  ) {
+                    Text("نظام التشغيل:", fontSize = 11.sp, color = Color(0xFF94A3B8))
+                    Text(
+                      text = viewModel.deviceSecurityManager.getAndroidOsVersion(),
+                      fontSize = 11.sp,
+                      color = Color(0xFFCBD5E1)
+                    )
+                  }
+
+                  Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween
+                  ) {
+                    Text("إصدار التطبيق:", fontSize = 11.sp, color = Color(0xFF94A3B8))
+                    Text(
+                      text = "v${viewModel.deviceSecurityManager.getAppVersion()}",
+                      fontSize = 11.sp,
+                      color = Color(0xFF34D399),
+                      fontWeight = FontWeight.Bold
+                    )
+                  }
+                }
+              }
+
+              // WhatsApp request button to Super Admin
               Button(
                 onClick = {
-                  if (regFullName.isBlank() || regEmail.isBlank() || regPassword.isBlank()) {
-                    Toast.makeText(context, "يرجى تعبئة كافة الحقول المطلوبة", Toast.LENGTH_SHORT).show()
-                  } else {
-                    viewModel.registerFirebaseStaff(regEmail, regPassword, regFullName, regRole)
-                  }
+                  val reqMessage = """
+                    🔐 *طلب اعتماد وترخيص جهاز جديد - معمل عقلان*
+                    ---------------------------------
+                    👨‍⚕️ المشرف العام: د. عقلان الكامل
+                    📱 نوع الجهاز: ${viewModel.deviceSecurityManager.getDeviceModelName()}
+                    🔑 معرف الجهاز (Hardware ID):
+                    $currentDeviceId
+                    📲 النظام: ${viewModel.deviceSecurityManager.getAndroidOsVersion()}
+                    📦 الإصدار: v${viewModel.deviceSecurityManager.getAppVersion()}
+                    ---------------------------------
+                    يرجى التكرم باعتماد وتفعيل الجهاز من خلال لوحة إدارة الأجهزة والتراخيص في التطبيق.
+                  """.trimIndent()
+                  viewModel.cloudSyncManager.shareViaWhatsApp(context, ClinicInfo.PHONES, reqMessage)
                 },
-                enabled = authState !is AuthUiState.Loading,
-                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF059669)),
+                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF25D366)),
                 shape = RoundedCornerShape(10.dp),
-                modifier = Modifier.fillMaxWidth().height(48.dp).testTag("reg_submit_btn")
+                modifier = Modifier.fillMaxWidth().height(48.dp)
               ) {
-                if (authState is AuthUiState.Loading) {
-                  CircularProgressIndicator(color = Color.White, modifier = Modifier.size(20.dp))
-                } else {
-                  Icon(Icons.Default.PersonAdd, contentDescription = null, modifier = Modifier.size(18.dp))
-                  Spacer(Modifier.width(8.dp))
-                  Text("إنشاء واعتماد حساب الموظف", fontWeight = FontWeight.Bold)
-                }
+                Icon(Icons.Default.Send, contentDescription = null, tint = Color.White, modifier = Modifier.size(18.dp))
+                Spacer(Modifier.width(8.dp))
+                Text("إرسال طلب الترخيص للدكتور عبر واتساب", fontWeight = FontWeight.Bold, color = Color.White)
               }
             }
           }
@@ -640,13 +771,13 @@ fun FirebaseAuthLoginScreen(
           verticalArrangement = Arrangement.spacedBy(4.dp)
         ) {
           Text(
-            text = "🔒 نظام إدارة المعامل محمي ومخصص حصرياً لمركز د. عقلان الكامل",
+            text = "🔒 نظام إدارة المعامل مغلق ومحمي حصرياً لمركز د. عقلان الكامل",
             fontSize = 11.sp,
             color = Color(0xFF64748B),
             textAlign = TextAlign.Center
           )
           Text(
-            text = "للمساعدة والدعم الفني: ${ClinicInfo.PHONES}",
+            text = "للتواصل مع المشرف العام: ${ClinicInfo.PHONES} | ${ClinicInfo.EMAIL}",
             fontSize = 10.sp,
             color = Color(0xFF475569),
             textAlign = TextAlign.Center
@@ -664,12 +795,12 @@ fun FirebaseAuthLoginScreen(
         Icon(Icons.Default.LockReset, contentDescription = null, tint = Color(0xFF38BDF8), modifier = Modifier.size(36.dp))
       },
       title = {
-        Text("استعادة كلمة المرور عبر Firebase", fontWeight = FontWeight.Bold, textAlign = TextAlign.Center)
+        Text("استعادة كلمة المرور للمشرف", fontWeight = FontWeight.Bold, textAlign = TextAlign.Center)
       },
       text = {
         Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
           Text(
-            text = "أدخل بريدك الإلكتروني المعتمد وسيقوم نظام Firebase بإرسال رابط آمن لإعادة تعيين كلمة المرور فوراً:",
+            text = "أدخل بريدك الإلكتروني المعتمد وسيقوم النظام بإرسال رابط آمن لإعادة تعيين كلمة المرور:",
             style = MaterialTheme.typography.bodySmall
           )
 

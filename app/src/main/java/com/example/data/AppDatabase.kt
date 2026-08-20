@@ -23,9 +23,10 @@ import kotlinx.coroutines.launch
     AuditLog::class,
     AppSetting::class,
     InventoryItem::class,
-    InventoryTransaction::class
+    InventoryTransaction::class,
+    DeviceBinding::class
   ],
-  version = 3,
+  version = 5,
   exportSchema = false
 )
 @TypeConverters(Converters::class)
@@ -39,6 +40,7 @@ abstract class AppDatabase : RoomDatabase() {
   abstract fun userDao(): UserDao
   abstract fun settingDao(): SettingDao
   abstract fun inventoryDao(): InventoryDao
+  abstract fun deviceBindingDao(): DeviceBindingDao
 
   companion object {
     @Volatile
@@ -78,6 +80,7 @@ abstract class AppDatabase : RoomDatabase() {
         database.shipmentDao().insertAll(DatabaseSeedData.defaultShipments)
         database.paymentDao().insertAll(DatabaseSeedData.defaultPayments)
         database.auditLogDao().insertAll(DatabaseSeedData.defaultAuditLogs)
+        database.deviceBindingDao().insertAll(DatabaseSeedData.defaultDevices)
         for (setting in DatabaseSeedData.defaultSettings) {
           database.settingDao().setSetting(setting)
         }

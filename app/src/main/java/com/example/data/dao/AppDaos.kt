@@ -266,3 +266,42 @@ interface InventoryDao {
   suspend fun deleteAllTransactions()
 }
 
+@Dao
+interface DeviceBindingDao {
+  @Query("SELECT * FROM device_bindings ORDER BY registeredAt DESC")
+  fun getAllDevices(): Flow<List<DeviceBinding>>
+
+  @Query("SELECT * FROM device_bindings ORDER BY registeredAt DESC")
+  suspend fun getAllDevicesSync(): List<DeviceBinding>
+
+  @Query("SELECT * FROM device_bindings WHERE userId = :userId ORDER BY registeredAt DESC")
+  fun getDevicesForUser(userId: Long): Flow<List<DeviceBinding>>
+
+  @Query("SELECT * FROM device_bindings WHERE deviceId = :deviceId LIMIT 1")
+  suspend fun getDeviceById(deviceId: String): DeviceBinding?
+
+  @Query("SELECT * FROM device_bindings WHERE deviceId = :deviceId LIMIT 1")
+  fun observeDeviceById(deviceId: String): Flow<DeviceBinding?>
+
+  @Insert(onConflict = OnConflictStrategy.REPLACE)
+  suspend fun insert(device: DeviceBinding): Long
+
+  @Insert(onConflict = OnConflictStrategy.REPLACE)
+  suspend fun insertAll(devices: List<DeviceBinding>)
+
+  @Update
+  suspend fun update(device: DeviceBinding)
+
+  @Query("UPDATE device_bindings SET status = :status, approvedByAdmin = :approvedBy, lastActiveAt = :lastActive WHERE deviceId = :deviceId")
+  suspend fun updateStatus(deviceId: String, status: DeviceStatus, approvedBy: String, lastActive: Long = System.currentTimeMillis())
+
+  @Delete
+  suspend fun delete(device: DeviceBinding)
+
+  @Query("DELETE FROM device_bindings WHERE deviceId = :deviceId")
+  suspend fun deleteByDeviceId(deviceId: String)
+
+  @Query("DELETE FROM device_bindings")
+  suspend fun deleteAllDevices()
+}
+

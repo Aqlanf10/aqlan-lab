@@ -18,6 +18,7 @@ class DentalLabRepository(private val database: AppDatabase) {
   private val userDao = database.userDao()
   private val settingDao = database.settingDao()
   private val inventoryDao = database.inventoryDao()
+  private val deviceBindingDao = database.deviceBindingDao()
 
   val allLabs: Flow<List<Laboratory>> = labDao.getAllLabs()
   val activeLabs: Flow<List<Laboratory>> = labDao.getActiveLabs()
@@ -31,6 +32,7 @@ class DentalLabRepository(private val database: AppDatabase) {
   val recentAuditLogs: Flow<List<AuditLog>> = auditLogDao.getRecentLogs()
   val allUsers: Flow<List<User>> = userDao.getAllUsers()
   val allSettings: Flow<List<AppSetting>> = settingDao.getAllSettings()
+  val allDevices: Flow<List<DeviceBinding>> = deviceBindingDao.getAllDevices()
 
   val allInventoryItems: Flow<List<InventoryItem>> = inventoryDao.getAllItems()
   val lowStockInventoryItems: Flow<List<InventoryItem>> = inventoryDao.getLowStockItems()
@@ -433,8 +435,46 @@ class DentalLabRepository(private val database: AppDatabase) {
     return inventoryDao.getTransactionsForItem(itemId)
   }
 
+  // --- Devices & Security Management ---
+  suspend fun insertOrUpdateDevice(device: DeviceBinding): Long {
+    return deviceBindingDao.insert(device)
+  }
+
+  suspend fun updateDeviceStatus(
+    deviceId: String,
+    newStatus: DeviceStatus,
+    approvedBy: String,
+    currentUser: User
+  ) {
+    deviceBindingDao.updateStatus(deviceId, newStatus, approvedBy)
+    logAudit(
+      user = currentUser,
+      action = if (newStatus == DeviceStatus.APPROVED) AuditActionType.DEVICE_APPROVAL else AuditActionType.DEVICE_BLOCKED,
+      description = "تحديث حالة الجهاز ($deviceId) إلى: ${newStatus.titleAr} بواسطة ${currentUser.fullName}",
+      entityType = "DeviceBinding"
+    )
+  }
+
+  suspend fun deleteDevice(device: DeviceBinding, currentUser: User) {
+    deviceBindingDao.delete(device)
+    logAudit(
+      user = currentUser,
+      action = AuditActionType.DEVICE_BLOCKED,
+      description = "إلغاء وحذف ترخيص الجهاز: ${device.deviceModel} (${device.deviceId})",
+      entityType = "DeviceBinding"
+    )
+  }
+
+  suspend fun getDeviceById(deviceId: String): DeviceBinding? {
+    return deviceBindingDao.getDeviceById(deviceId)
+  }
+
+  fun observeDeviceById(deviceId: String): Flow<DeviceBinding?> {
+    return deviceBindingDao.observeDeviceById(deviceId)
+  }
+
   // --- Audit Logging helper ---
-  private suspend fun logAudit(
+  suspend fun logAudit(
     user: User,
     action: AuditActionType,
     description: String,

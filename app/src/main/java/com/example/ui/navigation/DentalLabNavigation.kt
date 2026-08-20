@@ -51,6 +51,7 @@ sealed class Screen(val route: String, val titleAr: String, val icon: ImageVecto
   object Inventory : Screen("inventory", "المخزون والمواد", Icons.Default.Inventory2)
   object Analytics : Screen("analytics", "الرسوم البيانية والتحليلات", Icons.AutoMirrored.Filled.ShowChart)
   object QrScanner : Screen("qr_scanner", "قارئ الباركود والـ QR", Icons.Default.QrCodeScanner)
+  object WhatsAppNotifications : Screen("whatsapp_notifications", "إشعارات وفواتير الواتساب", Icons.AutoMirrored.Filled.Send)
 }
 
 @Composable
@@ -181,6 +182,7 @@ fun MainAppScaffold(
           onNavigateToAuditLog = { navController.navigate(Screen.AuditLog.route) },
           onNavigateToCloudSync = { navController.navigate(Screen.CloudSync.route) },
           onNavigateToQrScanner = { navController.navigate(Screen.QrScanner.route) },
+          onNavigateToWhatsApp = { navController.navigate(Screen.WhatsAppNotifications.route) },
           onOpenUserSwitchDialog = { showUserSwitchDialog = true }
         )
       }
@@ -367,6 +369,17 @@ fun MainAppScaffold(
             navController.navigate(Screen.ShipmentDetail.createRoute(shipmentId))
           },
           onBack = { navController.popBackStack() }
+        )
+      }
+
+      // 17. WhatsApp Notifications & Patient Invoices (إشعارات وفواتير الواتساب)
+      composable(Screen.WhatsAppNotifications.route) {
+        WhatsAppNotificationsScreen(
+          viewModel = viewModel,
+          onNavigateBack = { navController.popBackStack() },
+          onNavigateToShipmentDetail = { shipmentId ->
+            navController.navigate(Screen.ShipmentDetail.createRoute(shipmentId))
+          }
         )
       }
     }

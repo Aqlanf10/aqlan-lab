@@ -10,7 +10,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.*
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -54,6 +54,8 @@ fun ShipmentDetailScreen(
   val shipment = allShipments.find { it.id == shipmentId }
   var showDeleteDialog by remember { mutableStateOf(false) }
   var showVoucherDialog by remember { mutableStateOf(false) }
+  var showWhatsAppDialog by remember { mutableStateOf(false) }
+  var selectedWhatsAppTemplate by remember { mutableStateOf(com.example.util.WhatsAppTemplateType.PATIENT_INVOICE) }
 
   if (shipment == null) {
     Scaffold(
@@ -711,6 +713,136 @@ fun ShipmentDetailScreen(
           }
         }
       }
+
+      // 5. WhatsApp Patient Invoicing & Automated Alerts Card
+      Card(
+        shape = RoundedCornerShape(16.dp),
+        colors = CardDefaults.cardColors(containerColor = Color(0xFFF0FDF4)),
+        border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF86EFAC))
+      ) {
+        Column(
+          modifier = Modifier
+            .fillMaxWidth()
+            .padding(16.dp),
+          verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+          Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+          ) {
+            Row(
+              verticalAlignment = Alignment.CenterVertically,
+              horizontalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+              Surface(
+                shape = CircleShape,
+                color = Color(0xFF25D366),
+                modifier = Modifier.size(36.dp)
+              ) {
+                Box(contentAlignment = Alignment.Center) {
+                  Icon(
+                    imageVector = Icons.AutoMirrored.Filled.Send,
+                    contentDescription = null,
+                    tint = Color.White,
+                    modifier = Modifier.size(18.dp)
+                  )
+                }
+              }
+
+              Column {
+                Text(
+                  text = "إشعارات وفواتير الواتساب للمريض والمعمل",
+                  fontWeight = FontWeight.Bold,
+                  fontSize = 14.sp,
+                  color = Color(0xFF14532D)
+                )
+                Text(
+                  text = "إرسال فاتورة تفصيلية • إشعار جاهزية • تذكير موعد",
+                  fontSize = 11.sp,
+                  color = Color(0xFF166534)
+                )
+              }
+            }
+          }
+
+          // Quick Action Grid for WhatsApp Templates
+          Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+          ) {
+            // Patient Invoice Button
+            Button(
+              onClick = {
+                selectedWhatsAppTemplate = com.example.util.WhatsAppTemplateType.PATIENT_INVOICE
+                showWhatsAppDialog = true
+              },
+              colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF15803D)),
+              shape = RoundedCornerShape(10.dp),
+              contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp),
+              modifier = Modifier.weight(1f).testTag("whatsapp_invoice_action_btn")
+            ) {
+              Text("🧾 فاتورة للمريض", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = Color.White)
+            }
+
+            // Case Ready Notification Button
+            Button(
+              onClick = {
+                selectedWhatsAppTemplate = com.example.util.WhatsAppTemplateType.CASE_READY_ALERT
+                showWhatsAppDialog = true
+              },
+              colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF0284C7)),
+              shape = RoundedCornerShape(10.dp),
+              contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp),
+              modifier = Modifier.weight(1f).testTag("whatsapp_ready_alert_action_btn")
+            ) {
+              Text("🦷 إشعار جاهزية", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = Color.White)
+            }
+          }
+
+          Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+          ) {
+            // Appointment Reminder
+            OutlinedButton(
+              onClick = {
+                selectedWhatsAppTemplate = com.example.util.WhatsAppTemplateType.APPOINTMENT_REMINDER
+                showWhatsAppDialog = true
+              },
+              shape = RoundedCornerShape(10.dp),
+              contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp),
+              modifier = Modifier.weight(1f).testTag("whatsapp_appointment_action_btn")
+            ) {
+              Text("📅 تذكير موعد", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+            }
+
+            // Lab Follow-up
+            OutlinedButton(
+              onClick = {
+                selectedWhatsAppTemplate = com.example.util.WhatsAppTemplateType.LAB_FOLLOWUP
+                showWhatsAppDialog = true
+              },
+              shape = RoundedCornerShape(10.dp),
+              contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp),
+              modifier = Modifier.weight(1f).testTag("whatsapp_lab_followup_action_btn")
+            ) {
+              Text("🔬 متابعة معمل", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+            }
+          }
+        }
+      }
+    }
+
+    // WhatsApp Notification Dialog
+    if (showWhatsAppDialog) {
+      WhatsAppNotificationDialog(
+        shipment = shipment,
+        initialTemplateType = selectedWhatsAppTemplate,
+        initialPhoneNumber = shipment.patientPhone,
+        initialPatientName = shipment.patientName,
+        onDismiss = { showWhatsAppDialog = false }
+      )
     }
 
     // Official Delivery Voucher Dialog

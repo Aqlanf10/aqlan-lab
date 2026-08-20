@@ -148,6 +148,13 @@ fun AuditLogCardItem(log: AuditLog) {
     AuditActionType.DELETE_SHIPMENT -> Pair(Color(0xFFD32F2F), Icons.Default.Delete)
     AuditActionType.ADD_LAB, AuditActionType.UPDATE_LAB -> Pair(Color(0xFF3949AB), Icons.Default.Apartment)
     AuditActionType.SWITCH_USER -> Pair(Color(0xFF5E35B1), Icons.Default.Person)
+    AuditActionType.DEVICE_REGISTRATION -> Pair(Color(0xFF0284C7), Icons.Default.PhonelinkSetup)
+    AuditActionType.DEVICE_APPROVAL -> Pair(Color(0xFF10B981), Icons.Default.VerifiedUser)
+    AuditActionType.DEVICE_BLOCKED -> Pair(Color(0xFFEF4444), Icons.Default.Block)
+    AuditActionType.USER_STATUS_CHANGE -> Pair(Color(0xFFF59E0B), Icons.Default.ManageAccounts)
+    AuditActionType.LOGIN_SUCCESS -> Pair(Color(0xFF10B981), Icons.Default.Login)
+    AuditActionType.LOGIN_FAILED -> Pair(Color(0xFFDC2626), Icons.Default.NoEncryption)
+    AuditActionType.SECURITY_WARNING -> Pair(Color(0xFFB91C1C), Icons.Default.Warning)
   }
 
   Card(

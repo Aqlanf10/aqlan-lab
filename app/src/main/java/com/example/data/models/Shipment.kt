@@ -18,6 +18,7 @@ data class Shipment(
   val orderDate: Long = System.currentTimeMillis(),
   val clinicOrDoctorName: String,
   val patientName: String = "",
+  val patientPhone: String = "",
   val labId: Long,
   val labName: String,
   val workTypeId: Long,

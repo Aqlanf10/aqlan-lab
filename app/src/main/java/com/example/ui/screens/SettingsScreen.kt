@@ -149,9 +149,11 @@ fun SettingsScreen(
               RoleBadge(role = activeUser.role)
               Text(
                 text = when (activeUser.role) {
-                  UserRole.ADMIN -> "كامل الصلاحيات (الأسعار، المالية، المعامل)"
+                  UserRole.SUPER_ADMIN -> "المشرف العام والمالك (تحكم كامل بالحسابات والتراخيص والأسعار)"
+                  UserRole.ADMIN -> "مدير النظام (إدارة العمليات والأسعار والحسابات)"
                   UserRole.STAFF -> "صلاحيات تشغيلية فقط (الأسعار مخفية ومحمية)"
                   UserRole.ACCOUNTANT -> "صلاحيات مالية ومحاسبية"
+                  UserRole.TECHNICIAN -> "فني معمل (متابعة وتحديث حالة الأعمال)"
                 },
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -1135,9 +1137,11 @@ fun UserSwitchDialog(
                 RoleBadge(role = user.role)
                 Text(
                   text = when (user.role) {
+                    UserRole.SUPER_ADMIN -> "المشرف العام والمالك (صلاحيات غير مقيدة والتحكم بالتراخيص)"
                     UserRole.ADMIN -> "المدير العام (صلاحيات كاملة وتصفير النظام)"
                     UserRole.STAFF -> "موظف / فني (إنشاء الإرساليات بدون أسعار)"
                     UserRole.ACCOUNTANT -> "المحاسب (كشوفات الحساب والدفعات)"
+                    UserRole.TECHNICIAN -> "فني المعمل (تحديث الحالات والمراحل)"
                   },
                   style = MaterialTheme.typography.labelSmall,
                   color = MaterialTheme.colorScheme.onSurfaceVariant

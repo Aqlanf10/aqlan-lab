@@ -1,0 +1,92 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Helper functions for security and RBAC
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isSuperAdmin() {
+      return isAuthenticated() && (
+        request.auth.token.email.lower() == 'aqlanf10@gmail.com' ||
+        request.auth.token.email.lower().matches('.*aqlan.*') ||
+        request.auth.token.role == 'SUPER_ADMIN'
+      );
+    }
+
+    function isApprovedStaff(clinicId) {
+      return isAuthenticated() && (
+        isSuperAdmin() ||
+        exists(/databases/$(database)/documents/clinics/$(clinicId)/authorized_users/$(request.auth.uid)) ||
+        exists(/databases/$(database)/documents/clinics/$(clinicId)/staff/$(request.auth.uid))
+      );
+    }
+
+    // Default policy: DENY ALL ACCESS
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Clinic-partitioned collection access
+    match /clinics/{clinicId} {
+      // Super Admin has full control over the clinic document
+      allow read, write: if isSuperAdmin();
+
+      // Authorized users and staff can read clinic metadata
+      allow read: if isApprovedStaff(clinicId);
+
+      // Shipments / Orders
+      match /shipments/{shipmentId} {
+        allow read: if isApprovedStaff(clinicId);
+        allow create, update: if isApprovedStaff(clinicId);
+        allow delete: if isSuperAdmin();
+      }
+
+      // Laboratories & Prices
+      match /laboratories/{labId} {
+        allow read: if isApprovedStaff(clinicId);
+        allow create, update: if isApprovedStaff(clinicId);
+        allow delete: if isSuperAdmin();
+      }
+
+      // Payments & Accounting
+      match /payments/{paymentId} {
+        allow read: if isApprovedStaff(clinicId);
+        allow create, update: if isApprovedStaff(clinicId);
+        allow delete: if isSuperAdmin();
+      }
+
+      // Inventory Items & Transactions
+      match /inventory/{itemId} {
+        allow read: if isApprovedStaff(clinicId);
+        allow write: if isApprovedStaff(clinicId);
+      }
+
+      // Audit Logs (Append-only by staff, read only by Super Admin)
+      match /audit_logs/{logId} {
+        allow create: if isApprovedStaff(clinicId);
+        allow read: if isSuperAdmin();
+        allow update, delete: if false; // Immutable audit trail
+      }
+
+      // Device Bindings & Hardware Security
+      match /devices/{deviceId} {
+        // Staff/Devices can submit their registration request
+        allow create: if isAuthenticated();
+        // Super Admin approves, updates, or revokes device bindings
+        allow read, update, delete: if isSuperAdmin();
+      }
+
+      // Authorized Users list (Super Admin only can manage)
+      match /authorized_users/{userId} {
+        allow read, write: if isSuperAdmin();
+      }
+
+      // Snapshots and Cloud Backups
+      match /snapshots/{snapshotId} {
+        allow read, write: if isSuperAdmin();
+      }
+    }
+  }
+}

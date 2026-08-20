@@ -4,9 +4,70 @@ import com.example.data.models.*
 
 object DatabaseSeedData {
   val defaultUsers = listOf(
-    User(id = 1, username = "aqlan", fullName = "د. عقلان الكامل", role = UserRole.ADMIN, pinCode = "1111", avatarColor = 0xFFD32F2F),
-    User(id = 2, username = "staff1", fullName = "مروة العريقي", role = UserRole.STAFF, pinCode = "2222", avatarColor = 0xFF1976D2),
-    User(id = 3, username = "accountant1", fullName = "عمر باحميد", role = UserRole.ACCOUNTANT, pinCode = "3333", avatarColor = 0xFF388E3C)
+    User(
+      id = 1,
+      username = "aqlan",
+      fullName = "د. عقلان الكامل",
+      email = "Aqlanf10@gmail.com",
+      role = UserRole.SUPER_ADMIN,
+      pinCode = "1111",
+      avatarColor = 0xFFD32F2F,
+      isActive = true,
+      isApproved = true,
+      maxDevices = 5
+    ),
+    User(
+      id = 2,
+      username = "staff1",
+      fullName = "مروة العريقي",
+      email = "marwa.reception@aqlan.com",
+      role = UserRole.STAFF,
+      pinCode = "2222",
+      avatarColor = 0xFF1976D2,
+      isActive = true,
+      isApproved = true,
+      maxDevices = 2
+    ),
+    User(
+      id = 3,
+      username = "accountant1",
+      fullName = "عمر باحميد",
+      email = "omar.accountant@aqlan.com",
+      role = UserRole.ACCOUNTANT,
+      pinCode = "3333",
+      avatarColor = 0xFF388E3C,
+      isActive = true,
+      isApproved = true,
+      maxDevices = 2
+    ),
+    User(
+      id = 4,
+      username = "tech1",
+      fullName = "خالد الرازحي (فني معمل)",
+      email = "khaled.tech@aqlan.com",
+      role = UserRole.TECHNICIAN,
+      pinCode = "4444",
+      avatarColor = 0xFF7B1FA2,
+      isActive = true,
+      isApproved = true,
+      maxDevices = 1
+    )
+  )
+
+  val defaultDevices = listOf(
+    DeviceBinding(
+      id = 1,
+      deviceId = "MASTER_DEV_AQLAN_01",
+      userId = 1,
+      userName = "د. عقلان الكامل",
+      userRole = UserRole.SUPER_ADMIN,
+      deviceModel = "Doctor Primary Device",
+      osVersion = "Android 14",
+      appVersion = "1.0.0",
+      status = DeviceStatus.APPROVED,
+      approvedByAdmin = "SUPER_ADMIN",
+      notes = "الجهاز الرئيسي المعتمد للمشرف العام د. عقلان الكامل"
+    )
   )
 
   val defaultLabs = listOf(

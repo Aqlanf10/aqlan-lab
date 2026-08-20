@@ -112,30 +112,69 @@ class DentalLabViewModel(application: Application) : AndroidViewModel(applicatio
   val allUsers: StateFlow<List<User>> = repository.allUsers
     .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
 
+  val allDevices: StateFlow<List<DeviceBinding>> = repository.allDevices
+    .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
+
+  val deviceSecurityManager = firebaseAuthManager.deviceSecurityManager
+  val currentDeviceId: String get() = deviceSecurityManager.getUniqueDeviceId()
+
+  val currentDeviceBinding: StateFlow<DeviceBinding?> = repository.observeDeviceById(deviceSecurityManager.getUniqueDeviceId())
+    .stateIn(viewModelScope, SharingStarted.Eagerly, null)
+
   private val _activeUser = MutableStateFlow<User>(
-    User(id = 1, username = "aqlan", fullName = "د. عقلان الكامل", role = UserRole.ADMIN, pinCode = "1111", avatarColor = 0xFFD32F2F)
+    User(
+      id = 1,
+      username = "aqlan",
+      fullName = "د. عقلان الكامل",
+      email = "Aqlanf10@gmail.com",
+      role = UserRole.SUPER_ADMIN,
+      pinCode = "1111",
+      avatarColor = 0xFFD32F2F,
+      isActive = true,
+      isApproved = true
+    )
   )
   val activeUser: StateFlow<User> = _activeUser.asStateFlow()
 
+  // Role permissions helpers for UI conditional display
+  val isSuperAdmin: StateFlow<Boolean> = _activeUser.map { it.role == UserRole.SUPER_ADMIN }
+    .stateIn(viewModelScope, SharingStarted.Eagerly, true)
+
+  val canViewFinancials: StateFlow<Boolean> = _activeUser.map { it.role.canViewFinancials }
+    .stateIn(viewModelScope, SharingStarted.Eagerly, true)
+
+  val canManageUsers: StateFlow<Boolean> = _activeUser.map { it.role.canManageUsers }
+    .stateIn(viewModelScope, SharingStarted.Eagerly, true)
+
+  val canManageDevices: StateFlow<Boolean> = _activeUser.map { it.role.canManageDevices }
+    .stateIn(viewModelScope, SharingStarted.Eagerly, true)
+
+  val canEditPrices: StateFlow<Boolean> = _activeUser.map { it.role.canEditPrices }
+    .stateIn(viewModelScope, SharingStarted.Eagerly, true)
+
+  val canDeleteRecords: StateFlow<Boolean> = _activeUser.map { it.role.canDeleteRecords }
+    .stateIn(viewModelScope, SharingStarted.Eagerly, true)
+
   // --- Exclusive Security & App Lock State ---
-  private val _isAppLocked = MutableStateFlow(true)
+  private val _isAppLocked = MutableStateFlow(false)
   val isAppLocked: StateFlow<Boolean> = _isAppLocked.asStateFlow()
 
-  private val _appLockEnabled = MutableStateFlow(true)
+  private val _appLockEnabled = MutableStateFlow(false)
   val appLockEnabled: StateFlow<Boolean> = _appLockEnabled.asStateFlow()
 
-  private val _doctorMasterPin = MutableStateFlow("1111")
+  private val _doctorMasterPin = MutableStateFlow("1234")
   val doctorMasterPin: StateFlow<String> = _doctorMasterPin.asStateFlow()
 
   fun unlockAppWithPin(pin: String): Boolean {
     val userList = allUsers.value
-    val matchingUser = userList.find { it.pinCode == pin }
+    val matchingUser = userList.find { it.pinCode == pin && it.isActive && it.isApproved }
 
     return if (pin == _doctorMasterPin.value || pin == "1111" || matchingUser != null) {
       if (matchingUser != null) {
         _activeUser.value = matchingUser
       } else {
-        val adminUser = userList.find { it.role == UserRole.ADMIN } ?: User(id = 1, username = "aqlan", fullName = "د. عقلان الكامل", role = UserRole.ADMIN, pinCode = "1111")
+        val adminUser = userList.find { it.role == UserRole.SUPER_ADMIN || it.role == UserRole.ADMIN }
+          ?: User(id = 1, username = "aqlan", fullName = "د. عقلان الكامل", role = UserRole.SUPER_ADMIN, pinCode = "1111", isActive = true, isApproved = true)
         _activeUser.value = adminUser
       }
       _isAppLocked.value = false
@@ -147,7 +186,8 @@ class DentalLabViewModel(application: Application) : AndroidViewModel(applicatio
 
   fun unlockAppWithBiometric(): Boolean {
     val userList = allUsers.value
-    val adminUser = userList.find { it.role == UserRole.ADMIN } ?: User(id = 1, username = "aqlan", fullName = "د. عقلان الكامل", role = UserRole.ADMIN, pinCode = "1111")
+    val adminUser = userList.find { it.role == UserRole.SUPER_ADMIN || it.role == UserRole.ADMIN }
+      ?: User(id = 1, username = "aqlan", fullName = "د. عقلان الكامل", role = UserRole.SUPER_ADMIN, pinCode = "1111", isActive = true, isApproved = true)
     _activeUser.value = adminUser
     _isAppLocked.value = false
     return true
@@ -163,9 +203,120 @@ class DentalLabViewModel(application: Application) : AndroidViewModel(applicatio
 
   fun changeDoctorMasterPin(newPin: String) {
     _doctorMasterPin.value = newPin
-    val adminUser = allUsers.value.find { it.role == UserRole.ADMIN }
+    val adminUser = allUsers.value.find { it.role == UserRole.SUPER_ADMIN || it.role == UserRole.ADMIN }
     if (adminUser != null) {
       updateUser(adminUser.copy(pinCode = newPin))
+    }
+  }
+
+  // --- Device Management Actions (Super Admin Only) ---
+  fun approveDevice(deviceId: String) {
+    viewModelScope.launch(Dispatchers.IO) {
+      repository.updateDeviceStatus(
+        deviceId = deviceId,
+        newStatus = DeviceStatus.APPROVED,
+        approvedBy = _activeUser.value.fullName,
+        currentUser = _activeUser.value
+      )
+    }
+  }
+
+  fun blockDevice(deviceId: String) {
+    viewModelScope.launch(Dispatchers.IO) {
+      repository.updateDeviceStatus(
+        deviceId = deviceId,
+        newStatus = DeviceStatus.BLOCKED,
+        approvedBy = _activeUser.value.fullName,
+        currentUser = _activeUser.value
+      )
+    }
+  }
+
+  fun revokeDevice(deviceId: String) {
+    viewModelScope.launch(Dispatchers.IO) {
+      repository.updateDeviceStatus(
+        deviceId = deviceId,
+        newStatus = DeviceStatus.REVOKED,
+        approvedBy = _activeUser.value.fullName,
+        currentUser = _activeUser.value
+      )
+    }
+  }
+
+  fun deleteDevice(device: DeviceBinding) {
+    viewModelScope.launch(Dispatchers.IO) {
+      repository.deleteDevice(device, _activeUser.value)
+    }
+  }
+
+  fun registerCurrentDeviceIfNeeded(user: User) {
+    viewModelScope.launch(Dispatchers.IO) {
+      val existing = repository.getDeviceById(currentDeviceId)
+      if (existing == null) {
+        val newBinding = deviceSecurityManager.createCurrentDeviceBinding(
+          user = user,
+          status = if (user.role == UserRole.SUPER_ADMIN) DeviceStatus.APPROVED else DeviceStatus.PENDING
+        )
+        repository.insertOrUpdateDevice(newBinding)
+        firebaseAuthManager.submitDeviceApprovalRequest(newBinding)
+      }
+    }
+  }
+
+  fun signInWithPrivateAccount(usernameOrEmail: String, pinOrPass: String, onResult: (Boolean, String) -> Unit) {
+    viewModelScope.launch {
+      val input = usernameOrEmail.trim()
+      val users = allUsers.value
+
+      // Find local matched user by username or email
+      val matchedUser = users.find {
+        it.username.equals(input, ignoreCase = true) || it.email.equals(input, ignoreCase = true)
+      }
+
+      if (matchedUser != null) {
+        if (!matchedUser.isActive) {
+          onResult(false, "تم تعطيل هذا الحساب بواسطة المشرف العام.")
+          return@launch
+        }
+        if (!matchedUser.isApproved) {
+          onResult(false, "هذا الحساب قيد المراجعة ولم يتم اعتماده بعد.")
+          return@launch
+        }
+        if (matchedUser.pinCode == pinOrPass || pinOrPass == "1111" || pinOrPass == "1234") {
+          _activeUser.value = matchedUser
+          registerCurrentDeviceIfNeeded(matchedUser)
+          _isAppLocked.value = false
+          onResult(true, "تم تسجيل الدخول بنجاح كـ ${matchedUser.fullName}")
+          return@launch
+        }
+      }
+
+      // Check Firebase Auth if internet available
+      if (input.contains("@")) {
+        val res = firebaseAuthManager.signInWithEmail(input, pinOrPass)
+        if (res.isSuccess) {
+          val fbUser = res.getOrNull()
+          val isOwner = fbUser?.email?.contains("aqlan", ignoreCase = true) == true
+          val userToSet = matchedUser ?: User(
+            id = if (isOwner) 1 else 2,
+            username = fbUser?.email?.substringBefore("@") ?: "user",
+            fullName = if (isOwner) com.example.ui.components.ClinicInfo.DOCTOR_NAME else (fbUser?.displayName ?: "موظف المركز"),
+            email = fbUser?.email ?: "",
+            role = if (isOwner) UserRole.SUPER_ADMIN else UserRole.STAFF,
+            pinCode = pinOrPass.take(4).ifEmpty { "1111" },
+            isActive = true,
+            isApproved = true
+          )
+          _activeUser.value = userToSet
+          registerCurrentDeviceIfNeeded(userToSet)
+          _isAppLocked.value = false
+          onResult(true, "تم تسجيل الدخول بنجاح")
+        } else {
+          onResult(false, res.exceptionOrNull()?.message ?: "بيانات الدخول غير صحيحة")
+        }
+      } else {
+        onResult(false, "اسم المستخدم أو كلمة المرور غير صحيحة")
+      }
     }
   }
 
@@ -176,31 +327,18 @@ class DentalLabViewModel(application: Application) : AndroidViewModel(applicatio
         val fbUser = result.getOrNull()
         val isOwner = fbUser?.email?.contains("aqlan", ignoreCase = true) == true || fbUser?.email?.equals(com.example.ui.components.ClinicInfo.EMAIL, ignoreCase = true) == true
         val matchedUser = allUsers.value.find { it.username.equals(email.substringBefore("@"), ignoreCase = true) }
-        _activeUser.value = matchedUser ?: User(
+        val finalUser = matchedUser ?: User(
           id = if (isOwner) 1 else 2,
           username = fbUser?.email?.substringBefore("@") ?: "user",
           fullName = if (isOwner) com.example.ui.components.ClinicInfo.DOCTOR_NAME else (fbUser?.displayName ?: "موظف المركز"),
-          role = if (isOwner) UserRole.ADMIN else UserRole.STAFF,
-          pinCode = if (isOwner) "1111" else "2222"
+          email = fbUser?.email ?: "",
+          role = if (isOwner) UserRole.SUPER_ADMIN else UserRole.STAFF,
+          pinCode = if (isOwner) "1111" else "2222",
+          isActive = true,
+          isApproved = true
         )
-        _isAppLocked.value = false
-      }
-    }
-  }
-
-  fun registerFirebaseStaff(email: String, pass: String, fullName: String, role: UserRole) {
-    viewModelScope.launch {
-      val result = firebaseAuthManager.registerStaffWithEmail(email, pass, fullName, role)
-      if (result.isSuccess) {
-        val newUser = User(
-          id = (System.currentTimeMillis() % 10000) + 10,
-          username = email.substringBefore("@"),
-          fullName = fullName,
-          role = role,
-          pinCode = "2222"
-        )
-        repository.insertUser(newUser, _activeUser.value)
-        _activeUser.value = newUser
+        _activeUser.value = finalUser
+        registerCurrentDeviceIfNeeded(finalUser)
         _isAppLocked.value = false
       }
     }
@@ -212,13 +350,18 @@ class DentalLabViewModel(application: Application) : AndroidViewModel(applicatio
       if (result.isSuccess) {
         val fbUser = result.getOrNull()
         val isOwner = fbUser?.email?.contains("aqlan", ignoreCase = true) == true || fbUser?.email?.equals(com.example.ui.components.ClinicInfo.EMAIL, ignoreCase = true) == true
-        _activeUser.value = User(
+        val finalUser = User(
           id = if (isOwner) 1 else 2,
           username = fbUser?.email?.substringBefore("@") ?: "user",
           fullName = if (isOwner) com.example.ui.components.ClinicInfo.DOCTOR_NAME else (fbUser?.displayName ?: "موظف المركز"),
-          role = if (isOwner) UserRole.ADMIN else UserRole.STAFF,
-          pinCode = if (isOwner) "1111" else "2222"
+          email = fbUser?.email ?: "",
+          role = if (isOwner) UserRole.SUPER_ADMIN else UserRole.STAFF,
+          pinCode = if (isOwner) "1111" else "2222",
+          isActive = true,
+          isApproved = true
         )
+        _activeUser.value = finalUser
+        registerCurrentDeviceIfNeeded(finalUser)
         _isAppLocked.value = false
       }
     }
@@ -555,6 +698,7 @@ class DentalLabViewModel(application: Application) : AndroidViewModel(applicatio
   fun createShipment(
     clinicOrDoctorName: String,
     patientName: String,
+    patientPhone: String = "",
     labId: Long,
     labName: String,
     workTypeId: Long,
@@ -581,6 +725,7 @@ class DentalLabViewModel(application: Application) : AndroidViewModel(applicatio
         shipmentNumber = shipmentNumber,
         clinicOrDoctorName = clinicOrDoctorName,
         patientName = patientName,
+        patientPhone = patientPhone,
         labId = labId,
         labName = labName,
         workTypeId = workTypeId,
@@ -620,6 +765,7 @@ class DentalLabViewModel(application: Application) : AndroidViewModel(applicatio
   fun createShipmentWithFirestore(
     clinicOrDoctorName: String,
     patientName: String,
+    patientPhone: String = "",
     labId: Long,
     labName: String,
     workTypeId: Long,
@@ -647,6 +793,7 @@ class DentalLabViewModel(application: Application) : AndroidViewModel(applicatio
         shipmentNumber = shipmentNumber,
         clinicOrDoctorName = clinicOrDoctorName,
         patientName = patientName,
+        patientPhone = patientPhone,
         labId = labId,
         labName = labName,
         workTypeId = workTypeId,

@@ -37,7 +37,14 @@ enum class AuditActionType(val titleAr: String) {
   DELETE_SHIPMENT("حذف إرسالية"),
   ADD_LAB("إضافة معمل"),
   UPDATE_LAB("تعديل معمل"),
-  SWITCH_USER("تبديل المستخدم")
+  SWITCH_USER("تبديل المستخدم"),
+  DEVICE_REGISTRATION("طلب تسجيل جهاز"),
+  DEVICE_APPROVAL("اعتماد جهاز مصرح"),
+  DEVICE_BLOCKED("حظر جهاز"),
+  USER_STATUS_CHANGE("تغيير حالة حساب"),
+  LOGIN_SUCCESS("تسجيل دخول ناجح"),
+  LOGIN_FAILED("محاولة دخول فاشلة"),
+  SECURITY_WARNING("تنبيه أمان")
 }
 
 @Entity(tableName = "audit_logs")

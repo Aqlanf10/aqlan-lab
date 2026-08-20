@@ -67,9 +67,11 @@ fun RoleBadge(
   modifier: Modifier = Modifier
 ) {
   val (color, label) = when (role) {
+    UserRole.SUPER_ADMIN -> Pair(Color(0xFFDC2626), role.titleAr)
     UserRole.ADMIN -> Pair(RoleAdminColor, role.titleAr)
     UserRole.STAFF -> Pair(RoleStaffColor, role.titleAr)
     UserRole.ACCOUNTANT -> Pair(RoleAccountantColor, role.titleAr)
+    UserRole.TECHNICIAN -> Pair(Color(0xFF7C3AED), role.titleAr)
   }
 
   Surface(

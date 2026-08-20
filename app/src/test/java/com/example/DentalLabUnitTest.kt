@@ -94,9 +94,37 @@ class DentalLabUnitTest {
     val staffRole = UserRole.STAFF
 
     // Staff must not have financial visibility
-    assertFalse(staffRole != UserRole.STAFF)
-    assertTrue(adminRole != UserRole.STAFF)
-    assertTrue(accountantRole != UserRole.STAFF)
+    assertFalse(staffRole.canViewFinancials)
+    assertTrue(adminRole.canViewFinancials)
+    assertTrue(accountantRole.canViewFinancials)
+    assertTrue(UserRole.SUPER_ADMIN.canViewFinancials)
+    assertTrue(UserRole.SUPER_ADMIN.canManageUsers)
+    assertTrue(UserRole.SUPER_ADMIN.canManageDevices)
+    assertFalse(staffRole.canManageUsers)
+    assertFalse(accountantRole.canManageDevices)
+    assertFalse(UserRole.TECHNICIAN.canViewFinancials)
+  }
+
+  @Test
+  fun testDeviceBindingStatusAndPermissions() {
+    val approvedStatus = com.example.data.models.DeviceStatus.APPROVED
+    val pendingStatus = com.example.data.models.DeviceStatus.PENDING
+    val blockedStatus = com.example.data.models.DeviceStatus.BLOCKED
+
+    assertTrue(approvedStatus.isAllowed)
+    assertFalse(pendingStatus.isAllowed)
+    assertFalse(blockedStatus.isAllowed)
+
+    val device = com.example.data.models.DeviceBinding(
+      deviceId = "DEV-AQLAN-TEST-01",
+      userId = 1L,
+      userName = "د. عقلان الكامل",
+      userRole = UserRole.SUPER_ADMIN,
+      deviceModel = "Pixel 8 Pro",
+      status = com.example.data.models.DeviceStatus.APPROVED
+    )
+    assertEquals("DEV-AQLAN-TEST-01", device.deviceId)
+    assertTrue(device.status.isAllowed)
   }
 
   @Test
