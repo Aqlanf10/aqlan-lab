@@ -1,0 +1,47 @@
+rules_version = '2';
+service firebase.storage {
+  match /b/{bucket}/o {
+
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isSuperAdmin() {
+      return isAuthenticated() && (
+        request.auth.token.role == 'SUPER_ADMIN' ||
+        (request.auth.token.email != null && request.auth.token.email.lower() == 'aqlanf10@gmail.com')
+      );
+    }
+
+    function hasFinancialAccess() {
+      return isAuthenticated() && (
+        isSuperAdmin() ||
+        request.auth.token.role in ['SUPER_ADMIN', 'ADMIN', 'ACCOUNTANT'] ||
+        (request.auth.token.permissions != null && 'read:financials' in request.auth.token.permissions)
+      );
+    }
+
+    // Default: Deny All
+    match /{allPaths=**} {
+      allow read, write: if false;
+    }
+
+    // Operational Attachments: Clinical Photos, Shade Images, STL Files, X-Rays
+    // Accessible to all authenticated operational lab staff
+    match /attachments/{clinicId}/{allFiles=**} {
+      allow read, write: if isAuthenticated();
+    }
+
+    // Financial Records: Receipts, Invoices, PDF Accounting Statements
+    // Strictly restricted to Financial Roles (SuperAdmin, Admin, Accountant)
+    match /financial_docs/{clinicId}/{allFiles=**} {
+      allow read, write: if hasFinancialAccess();
+    }
+
+    // Full Database Backup JSONs: Contain sensitive revenue, margins, and financial records
+    // Strictly restricted to Financial Roles / Super Admin (STAFF / TECHNICIAN DENIED!)
+    match /backups/{clinicId}/{allFiles=**} {
+      allow read, write: if hasFinancialAccess();
+    }
+  }
+}

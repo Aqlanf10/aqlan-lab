@@ -5,17 +5,30 @@
 # For more details, see
 #   http://developer.android.com/guide/developing/tools/proguard.html
 
-# If your project uses WebView with JS, uncomment the following
-# and specify the fully qualified class name to the JavaScript interface
-# class:
-#-keepclassmembers class fqcn.of.javascript.interface.for.webview {
-#   public *;
-#}
+# Project specific ProGuard rules for com.aqlanlab.app
 
-# Uncomment this to preserve the line number information for
-# debugging stack traces.
-#-keepattributes SourceFile,LineNumberTable
+# Keep Room entities, DAOs, and Database
+-keep class com.aqlanlab.app.data.models.** { *; }
+-keep class com.aqlanlab.app.data.dao.** { *; }
+-keep class com.aqlanlab.app.data.AppDatabase { *; }
+-keep class * extends androidx.room.RoomDatabase
+-dontwarn androidx.room.paging.**
 
-# If you keep the line number information, uncomment this to
-# hide the original source file name.
-#-renamesourcefileattribute SourceFile
+# Keep Moshi models & codegen adapters
+-keepclasseswithmembers class * {
+    @com.squareup.moshi.JsonClass <fields>;
+}
+-keep class com.squareup.moshi.** { *; }
+-keep class * implements com.squareup.moshi.JsonAdapter { *; }
+
+# Keep Network models & Services
+-keep class com.aqlanlab.app.data.network.** { *; }
+-keep class com.aqlanlab.app.network.** { *; }
+
+# Keep Firebase App Check & Auth models
+-keep class com.google.firebase.appcheck.** { *; }
+-keep class com.google.firebase.auth.** { *; }
+
+# Keep Line numbers for crash reports
+-keepattributes SourceFile,LineNumberTable
+

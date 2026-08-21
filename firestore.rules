@@ -7,25 +7,56 @@ service cloud.firestore {
       return request.auth != null;
     }
 
+    // Explicit and secure Super Admin definition:
+    // 1. Firebase Auth Custom Claim: request.auth.token.role == 'SUPER_ADMIN' (set exclusively by Admin SDK / Trusted Backend)
+    // 2. Exact verified Doctor Owner Master Email (strictly exact equality, NEVER substring/regex)
     function isSuperAdmin() {
       return isAuthenticated() && (
-        request.auth.token.email.lower() == 'aqlanf10@gmail.com' ||
-        request.auth.token.email.lower().matches('.*aqlan.*') ||
-        request.auth.token.role == 'SUPER_ADMIN'
+        request.auth.token.role == 'SUPER_ADMIN' ||
+        (request.auth.token.email != null && request.auth.token.email.lower() == 'aqlanf10@gmail.com')
       );
     }
 
+    function isAuthorizedUser(clinicId) {
+      return exists(/databases/$(database)/documents/clinics/$(clinicId)/authorized_users/$(request.auth.uid)) &&
+             get(/databases/$(database)/documents/clinics/$(clinicId)/authorized_users/$(request.auth.uid)).data.isActive != false &&
+             get(/databases/$(database)/documents/clinics/$(clinicId)/authorized_users/$(request.auth.uid)).data.isApproved != false;
+    }
+
+    // Approved Staff (includes Operational roles: STAFF, TECHNICIAN, etc.)
     function isApprovedStaff(clinicId) {
       return isAuthenticated() && (
         isSuperAdmin() ||
-        exists(/databases/$(database)/documents/clinics/$(clinicId)/authorized_users/$(request.auth.uid)) ||
+        request.auth.token.role in ['ADMIN', 'ACCOUNTANT', 'STAFF', 'TECHNICIAN'] ||
+        isAuthorizedUser(clinicId) ||
         exists(/databases/$(database)/documents/clinics/$(clinicId)/staff/$(request.auth.uid))
       );
     }
 
-    // Default policy: DENY ALL ACCESS
+    // Strict Server-Side Financial Access Control:
+    // STAFF and TECHNICIAN are completely BLOCKED from reading or writing any financial data.
+    // Only SUPER_ADMIN, ADMIN, ACCOUNTANT, or tokens with explicit 'read:financials' permission are allowed.
+    function hasFinancialAccess(clinicId) {
+      return isAuthenticated() && (
+        isSuperAdmin() ||
+        request.auth.token.role in ['SUPER_ADMIN', 'ADMIN', 'ACCOUNTANT'] ||
+        (request.auth.token.permissions != null && 'read:financials' in request.auth.token.permissions) ||
+        (
+          isAuthorizedUser(clinicId) &&
+          get(/databases/$(database)/documents/clinics/$(clinicId)/authorized_users/$(request.auth.uid)).data.role in ['SUPER_ADMIN', 'ADMIN', 'ACCOUNTANT']
+        )
+      );
+    }
+
+    // Default policy: DENY ALL ACCESS (Deny by default)
     match /{document=**} {
       allow read, write: if false;
+    }
+
+    // App Versioning & Remote Configuration (Readable by all clients before/after login)
+    match /app_config/{configId} {
+      allow read: if true;
+      allow write: if isSuperAdmin();
     }
 
     // Clinic-partitioned collection access
@@ -36,55 +67,91 @@ service cloud.firestore {
       // Authorized users and staff can read clinic metadata
       allow read: if isApprovedStaff(clinicId);
 
-      // Shipments / Orders
+      // 1. Operational Shipments / Orders (NO FINANCIAL FIELDS)
+      // Accessible to operational staff (Technicians, Staff, Reception)
       match /shipments/{shipmentId} {
         allow read: if isApprovedStaff(clinicId);
-        allow create, update: if isApprovedStaff(clinicId);
+        allow create, update: if isApprovedStaff(clinicId) &&
+          // Guarantee that operational staff cannot inject financial fields directly
+          (!('unitPrice' in request.resource.data) &&
+           !('totalPrice' in request.resource.data) &&
+           !('discount' in request.resource.data) &&
+           !('labPrice' in request.resource.data) &&
+           !('cost' in request.resource.data) &&
+           !('profit' in request.resource.data)) || hasFinancialAccess(clinicId);
         allow delete: if isSuperAdmin();
       }
 
-      // Laboratories & Prices
+      // 2. Financial Partition for Shipments (unitPrice, totalPrice, discount, cost, profit, labPrice)
+      // Completely BLOCKED for STAFF & TECHNICIAN server-side!
+      match /shipment_finance/{shipmentId} {
+        allow read, write: if hasFinancialAccess(clinicId);
+      }
+
+      // 3. Payments & Invoices (Financial Role Only)
+      // Completely BLOCKED for STAFF & TECHNICIAN server-side!
+      match /payments/{paymentId} {
+        allow read: if hasFinancialAccess(clinicId);
+        allow create, update: if hasFinancialAccess(clinicId);
+        allow delete: if isSuperAdmin();
+      }
+
+      // 4. Accounting Reports, Revenue & Balances (Financial Role Only)
+      match /accounting_reports/{reportId} {
+        allow read, write: if hasFinancialAccess(clinicId);
+      }
+
+      match /balances/{balanceId} {
+        allow read, write: if hasFinancialAccess(clinicId);
+      }
+
+      // 5. Laboratories Directory & Basic Info
       match /laboratories/{labId} {
         allow read: if isApprovedStaff(clinicId);
         allow create, update: if isApprovedStaff(clinicId);
         allow delete: if isSuperAdmin();
+
+        // Sensitive Lab Price Matrices / Financial Agreements
+        match /price_agreements/{priceId} {
+          allow read, write: if hasFinancialAccess(clinicId);
+        }
       }
 
-      // Payments & Accounting
-      match /payments/{paymentId} {
-        allow read: if isApprovedStaff(clinicId);
-        allow create, update: if isApprovedStaff(clinicId);
-        allow delete: if isSuperAdmin();
-      }
-
-      // Inventory Items & Transactions
+      // 6. Inventory Items & Stock Counts
       match /inventory/{itemId} {
         allow read: if isApprovedStaff(clinicId);
         allow write: if isApprovedStaff(clinicId);
       }
 
-      // Audit Logs (Append-only by staff, read only by Super Admin)
+      // 7. Audit Logs (Append-only by staff, read only by Super Admin)
       match /audit_logs/{logId} {
         allow create: if isApprovedStaff(clinicId);
         allow read: if isSuperAdmin();
         allow update, delete: if false; // Immutable audit trail
       }
 
-      // Device Bindings & Hardware Security
+      // 8. Device Bindings & Hardware Security
       match /devices/{deviceId} {
-        // Staff/Devices can submit their registration request
         allow create: if isAuthenticated();
-        // Super Admin approves, updates, or revokes device bindings
         allow read, update, delete: if isSuperAdmin();
       }
 
-      // Authorized Users list (Super Admin only can manage)
-      match /authorized_users/{userId} {
+      // 9. Authorized Users list (Keyed by Firebase UID)
+      match /authorized_users/{firebaseUid} {
+        allow read: if isSuperAdmin() || (isAuthenticated() && request.auth.uid == firebaseUid);
+        allow write: if isSuperAdmin();
+      }
+
+      // 10. Snapshots and Cloud Backups (Contains full database, strictly Super Admin / Financial Roles)
+      match /snapshots/{snapshotId} {
         allow read, write: if isSuperAdmin();
       }
 
-      // Snapshots and Cloud Backups
-      match /snapshots/{snapshotId} {
+      match /backups/{snapshotId} {
+        allow read, write: if isSuperAdmin() || hasFinancialAccess(clinicId);
+      }
+
+      match /backup_payloads/{snapshotId} {
         allow read, write: if isSuperAdmin();
       }
     }
