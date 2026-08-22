@@ -64,7 +64,12 @@ class FirebaseAuthManager(
   val isAuthorized: StateFlow<Boolean> = _isAuthorized.asStateFlow()
 
   private var firebaseAuth: FirebaseAuth? = null
-  private var credentialManager: CredentialManager = CredentialManager.create(context)
+  private var credentialManager: CredentialManager? = try {
+    CredentialManager.create(context)
+  } catch (t: Throwable) {
+    Log.w(TAG, "CredentialManager not supported or available: ${t.message}")
+    null
+  }
   val deviceSecurityManager = DeviceSecurityManager(context)
 
   // Authorized Super Admin and staff emails whitelist
@@ -199,7 +204,15 @@ class FirebaseAuthManager(
         .addCredentialOption(googleIdOption)
         .build()
 
-      val result = credentialManager.getCredential(
+      val credManager = credentialManager ?: try {
+        CredentialManager.create(activityContext).also { credentialManager = it }
+      } catch (t: Throwable) {
+        val msg = "خدمات Google Credential Manager غير متوفرة على هذا الجهاز. يمكنك تسجيل الدخول بالاسم ورمز المشرف."
+        _authState.value = AuthUiState.Error(msg)
+        return@withContext Result.failure(Exception(msg))
+      }
+
+      val result = credManager.getCredential(
         request = request,
         context = activityContext
       )

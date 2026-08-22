@@ -48,6 +48,7 @@ class DentalLabRepository(private val database: AppDatabase) {
       shipmentDao.insertAll(DatabaseSeedData.defaultShipments)
       paymentDao.insertAll(DatabaseSeedData.defaultPayments)
       auditLogDao.insertAll(DatabaseSeedData.defaultAuditLogs)
+      deviceBindingDao.insertAll(DatabaseSeedData.defaultDevices)
       inventoryDao.insertAll(DatabaseSeedData.defaultInventoryItems)
       inventoryDao.insertAllTransactions(DatabaseSeedData.defaultInventoryTransactions)
       for (setting in DatabaseSeedData.defaultSettings) {

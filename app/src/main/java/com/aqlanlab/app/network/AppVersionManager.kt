@@ -51,7 +51,7 @@ class AppVersionManager(private val context: Context) {
     const val VERSION_CONFIG_DOC = "version_config"
   }
 
-  private val _updateStatus = MutableStateFlow<AppUpdateStatus>(AppUpdateStatus.Checking)
+  private val _updateStatus = MutableStateFlow<AppUpdateStatus>(AppUpdateStatus.UpToDate)
   val updateStatus: StateFlow<AppUpdateStatus> = _updateStatus.asStateFlow()
 
   private val _versionConfig = MutableStateFlow(AppVersionConfig())

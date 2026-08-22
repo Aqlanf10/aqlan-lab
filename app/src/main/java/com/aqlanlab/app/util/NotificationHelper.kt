@@ -33,69 +33,78 @@ object NotificationHelper {
 
   fun init(context: Context) {
     if (isInitialized) return
-    createNotificationChannels(context)
-    isInitialized = true
+    try {
+      createNotificationChannels(context.applicationContext)
+      isInitialized = true
+    } catch (t: Throwable) {
+      Log.w(TAG, "Notification channel init handled: ${t.message}")
+    }
   }
 
   private fun createNotificationChannels(context: Context) {
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-      val notificationManager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+      try {
+        val notificationManager = context.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
+          ?: return
 
-      // 1. New Shipments Channel
-      val newShipmentChannel = NotificationChannel(
-        CHANNEL_ID_NEW_SHIPMENTS,
-        "إرساليات جديدة 📦",
-        NotificationManager.IMPORTANCE_HIGH
-      ).apply {
-        description = "إشعارات فورية عند إضافة إرسالية معملية جديدة لمركز د. عقلان الكامل"
-        enableLights(true)
-        lightColor = Color.BLUE
-        enableVibration(true)
-        vibrationPattern = longArrayOf(0, 300, 200, 300)
+        // 1. New Shipments Channel
+        val newShipmentChannel = NotificationChannel(
+          CHANNEL_ID_NEW_SHIPMENTS,
+          "إرساليات جديدة 📦",
+          NotificationManager.IMPORTANCE_HIGH
+        ).apply {
+          description = "إشعارات فورية عند إضافة إرسالية معملية جديدة لمركز د. عقلان الكامل"
+          enableLights(true)
+          lightColor = Color.BLUE
+          enableVibration(true)
+          vibrationPattern = longArrayOf(0, 300, 200, 300)
+        }
+
+        // 2. Order Status Changes Channel
+        val statusChangeChannel = NotificationChannel(
+          CHANNEL_ID_STATUS_CHANGES,
+          "تحديثات حالة الإرساليات 🔄",
+          NotificationManager.IMPORTANCE_HIGH
+        ).apply {
+          description = "تنبيهات فورية عند تغيير حالة طلب (تم الإرسال، قيد التنفيذ، جاهز، تم الاستلام)"
+          enableLights(true)
+          lightColor = Color.GREEN
+          enableVibration(true)
+          vibrationPattern = longArrayOf(0, 250, 150, 250)
+        }
+
+        // 3. Urgent & Critical Alerts Channel
+        val urgentChannel = NotificationChannel(
+          CHANNEL_ID_URGENT_ALERTS,
+          "تنبيهات الحالات المستعجلة 🚨",
+          NotificationManager.IMPORTANCE_MAX
+        ).apply {
+          description = "تنبيهات الحالات الطارئة ومواعيد التسليم المتأخرة"
+          enableLights(true)
+          lightColor = Color.RED
+          enableVibration(true)
+          vibrationPattern = longArrayOf(0, 500, 200, 500, 200, 500)
+        }
+
+        // 4. Delivery Due Approaching Channel
+        val deliveryReminderChannel = NotificationChannel(
+          CHANNEL_ID_DELIVERY_REMINDERS,
+          "تذكير اقتراب موعد تسليم الإرساليات ⏰",
+          NotificationManager.IMPORTANCE_HIGH
+        ).apply {
+          description = "تنبيهات تلقائية عند اقتراب تاريخ استحقاق تسليم الإرسالية المعملية من المعمل"
+          enableLights(true)
+          lightColor = Color.YELLOW
+          enableVibration(true)
+          vibrationPattern = longArrayOf(0, 400, 200, 400)
+        }
+
+        notificationManager.createNotificationChannels(
+          listOf(newShipmentChannel, statusChangeChannel, urgentChannel, deliveryReminderChannel)
+        )
+      } catch (t: Throwable) {
+        Log.w(TAG, "Failed creating notification channels: ${t.message}")
       }
-
-      // 2. Order Status Changes Channel
-      val statusChangeChannel = NotificationChannel(
-        CHANNEL_ID_STATUS_CHANGES,
-        "تحديثات حالة الإرساليات 🔄",
-        NotificationManager.IMPORTANCE_HIGH
-      ).apply {
-        description = "تنبيهات فورية عند تغيير حالة طلب (تم الإرسال، قيد التنفيذ، جاهز، تم الاستلام)"
-        enableLights(true)
-        lightColor = Color.GREEN
-        enableVibration(true)
-        vibrationPattern = longArrayOf(0, 250, 150, 250)
-      }
-
-      // 3. Urgent & Critical Alerts Channel
-      val urgentChannel = NotificationChannel(
-        CHANNEL_ID_URGENT_ALERTS,
-        "تنبيهات الحالات المستعجلة 🚨",
-        NotificationManager.IMPORTANCE_MAX
-      ).apply {
-        description = "تنبيهات الحالات الطارئة ومواعيد التسليم المتأخرة"
-        enableLights(true)
-        lightColor = Color.RED
-        enableVibration(true)
-        vibrationPattern = longArrayOf(0, 500, 200, 500, 200, 500)
-      }
-
-      // 4. Delivery Due Approaching Channel
-      val deliveryReminderChannel = NotificationChannel(
-        CHANNEL_ID_DELIVERY_REMINDERS,
-        "تذكير اقتراب موعد تسليم الإرساليات ⏰",
-        NotificationManager.IMPORTANCE_HIGH
-      ).apply {
-        description = "تنبيهات تلقائية عند اقتراب تاريخ استحقاق تسليم الإرسالية المعملية من المعمل"
-        enableLights(true)
-        lightColor = Color.YELLOW
-        enableVibration(true)
-        vibrationPattern = longArrayOf(0, 400, 200, 400)
-      }
-
-      notificationManager.createNotificationChannels(
-        listOf(newShipmentChannel, statusChangeChannel, urgentChannel, deliveryReminderChannel)
-      )
     }
   }
 

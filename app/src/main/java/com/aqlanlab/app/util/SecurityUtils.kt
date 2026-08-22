@@ -2,7 +2,6 @@ package com.aqlanlab.app.util
 
 import java.security.MessageDigest
 import java.security.SecureRandom
-import java.util.Base64
 
 /**
  * Utility for hashing and verifying PINs using cryptographic SHA-256 with a unique Salt.
@@ -13,22 +12,22 @@ object SecurityUtils {
   private const val ITERATIONS = 1000
 
   /**
-   * Generates a secure random 16-byte salt, Base64 encoded.
+   * Generates a secure random 16-byte salt, Hex encoded.
    */
   fun generateSalt(): String {
     val random = SecureRandom()
     val saltBytes = ByteArray(16)
     random.nextBytes(saltBytes)
-    return Base64.getEncoder().encodeToString(saltBytes)
+    return saltBytes.joinToString("") { "%02x".format(it) }
   }
 
   /**
    * Hashes the raw PIN with the provided salt using multiple rounds of SHA-256.
-   * Returns a secure hash string: "sha256:salt:hashHex"
+   * Returns a secure hash string: "salt:hashHex"
    */
   fun hashPin(rawPin: String, salt: String = generateSalt()): String {
     if (rawPin.isBlank()) return ""
-    try {
+    return try {
       val md = MessageDigest.getInstance("SHA-256")
       var hash = (rawPin + ":" + salt).toByteArray(Charsets.UTF_8)
       for (i in 0 until ITERATIONS) {
@@ -36,9 +35,9 @@ object SecurityUtils {
         hash = md.digest(hash)
       }
       val hashHex = hash.joinToString("") { "%02x".format(it) }
-      return "$salt:$hashHex"
+      "$salt:$hashHex"
     } catch (e: Exception) {
-      return ""
+      ""
     }
   }
 
