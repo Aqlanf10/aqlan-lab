@@ -1,7 +1,8 @@
 package com.aqlanlab.app.ui.navigation
 
 import androidx.compose.animation.*
-import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.*
 import androidx.compose.material.icons.filled.*
@@ -9,6 +10,7 @@ import androidx.compose.material.icons.outlined.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
@@ -362,6 +364,7 @@ fun MainAppScaffold(
           onNavigateToAuditLog = { navController.navigate(Screen.AuditLog.route) },
           onNavigateToCloudSync = { navController.navigate(Screen.CloudSync.route) },
           onNavigateToUserManagement = { navController.navigate(Screen.UserManagement.route) },
+          onNavigateToMessagingGateways = { navController.navigate(Screen.WhatsAppNotifications.route) },
           onOpenUserSwitchDialog = { showUserSwitchDialog = true },
           onBack = { navController.popBackStack() }
         )
@@ -422,6 +425,72 @@ fun MainAppScaffold(
           viewModel.switchUser(selectedUser)
         },
         onDismiss = { showUserSwitchDialog = false }
+      )
+    }
+
+    // Optional Update Prompt Dialog (Dismissible)
+    var hasDismissedOptionalUpdate by remember { mutableStateOf(false) }
+    if (updateStatus is com.aqlanlab.app.network.AppUpdateStatus.OptionalUpdateAvailable && !hasDismissedOptionalUpdate) {
+      val optConfig = (updateStatus as com.aqlanlab.app.network.AppUpdateStatus.OptionalUpdateAvailable).config
+      AlertDialog(
+        onDismissRequest = { hasDismissedOptionalUpdate = true },
+        icon = {
+          Icon(
+            imageVector = Icons.Default.NewReleases,
+            contentDescription = null,
+            tint = Color(0xFFD97706),
+            modifier = Modifier.size(36.dp)
+          )
+        },
+        title = {
+          Text(
+            text = "يتوفر إصدار جديد من التطبيق (v${optConfig.latestVersionName}) 📲",
+            fontWeight = FontWeight.Bold,
+            style = MaterialTheme.typography.titleMedium,
+            textAlign = androidx.compose.ui.text.style.TextAlign.Center
+          )
+        },
+        text = {
+          Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text(
+              text = optConfig.updateMessageAr.ifEmpty { "يتوفر تحديث جديد يتضمن تحسينات وميزات متقدمة لنظام إدارة معامل الأسنان." },
+              fontSize = 12.sp,
+              color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            if (optConfig.releaseNotesAr.isNotBlank()) {
+              Surface(
+                shape = RoundedCornerShape(8.dp),
+                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+                modifier = Modifier.fillMaxWidth()
+              ) {
+                Column(modifier = Modifier.padding(8.dp)) {
+                  Text("📋 ما الجديد:", fontWeight = FontWeight.Bold, fontSize = 11.sp, color = MaterialTheme.colorScheme.primary)
+                  Text(optConfig.releaseNotesAr, fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+              }
+            }
+          }
+        },
+        confirmButton = {
+          Button(
+            onClick = {
+              hasDismissedOptionalUpdate = true
+              viewModel.appVersionManager.openUpdateUrl(optConfig.updateUrl)
+            },
+            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF0D9488)),
+            shape = RoundedCornerShape(8.dp)
+          ) {
+            Icon(Icons.Default.FileDownload, contentDescription = null, modifier = Modifier.size(16.dp))
+            Spacer(Modifier.width(6.dp))
+            Text("تنزيل وتحديث الآن", fontWeight = FontWeight.Bold)
+          }
+        },
+        dismissButton = {
+          TextButton(onClick = { hasDismissedOptionalUpdate = true }) {
+            Text("لاحقاً")
+          }
+        },
+        shape = RoundedCornerShape(16.dp)
       )
     }
   }

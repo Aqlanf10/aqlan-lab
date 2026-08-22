@@ -40,33 +40,44 @@ object AppCheckManager {
 
       val firebaseAppCheck = FirebaseAppCheck.getInstance()
 
-      if (BuildConfig.DEBUG) {
-        // Debug builds use the DebugAppCheckProviderFactory
-        // In local development, the debug token is logged in Logcat by Firebase SDK
-        Log.i(TAG, "Initializing Firebase App Check with DebugAppCheckProviderFactory")
-        firebaseAppCheck.installAppCheckProviderFactory(
-          DebugAppCheckProviderFactory.getInstance()
-        )
-      } else {
-        // Production / Release builds use Google Play Integrity API
-        Log.i(TAG, "Initializing Firebase App Check with PlayIntegrityAppCheckProviderFactory")
-        firebaseAppCheck.installAppCheckProviderFactory(
-          PlayIntegrityAppCheckProviderFactory.getInstance()
-        )
+      try {
+        if (BuildConfig.DEBUG) {
+          // Debug builds use the DebugAppCheckProviderFactory
+          Log.i(TAG, "Initializing Firebase App Check with DebugAppCheckProviderFactory")
+          firebaseAppCheck.installAppCheckProviderFactory(
+            DebugAppCheckProviderFactory.getInstance()
+          )
+        } else {
+          // Production / Release builds use Google Play Integrity API
+          Log.i(TAG, "Initializing Firebase App Check with PlayIntegrityAppCheckProviderFactory")
+          firebaseAppCheck.installAppCheckProviderFactory(
+            PlayIntegrityAppCheckProviderFactory.getInstance()
+          )
+        }
+      } catch (e: Throwable) {
+        Log.w(TAG, "AppCheck provider installation note: ${e.message}")
       }
 
       // Automatically refresh App Check tokens before expiration
-      firebaseAppCheck.setTokenAutoRefreshEnabled(true)
+      try {
+        firebaseAppCheck.setTokenAutoRefreshEnabled(true)
+      } catch (e: Throwable) {
+        Log.w(TAG, "AppCheck token auto refresh note: ${e.message}")
+      }
 
       // Add listener to monitor App Check token events and attestation status
-      firebaseAppCheck.addAppCheckListener { token: AppCheckToken ->
-        Log.d(TAG, "App Check token refreshed successfully. Expire Time: ${token.expireTimeMillis}")
+      try {
+        firebaseAppCheck.addAppCheckListener { token: AppCheckToken ->
+          Log.d(TAG, "App Check token refreshed successfully. Expire Time: ${token.expireTimeMillis}")
+        }
+      } catch (e: Throwable) {
+        Log.w(TAG, "AppCheck listener note: ${e.message}")
       }
 
       isInitialized = true
       Log.i(TAG, "Firebase App Check initialized successfully.")
-    } catch (e: Exception) {
-      Log.e(TAG, "Failed to initialize Firebase App Check: ${e.message}", e)
+    } catch (e: Throwable) {
+      Log.w(TAG, "Failed to initialize Firebase App Check: ${e.message}")
     }
   }
 

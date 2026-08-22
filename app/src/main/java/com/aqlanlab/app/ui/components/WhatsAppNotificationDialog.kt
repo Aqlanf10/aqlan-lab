@@ -416,11 +416,28 @@ fun WhatsAppNotificationDialog(
                 WhatsAppMessagingManager.shareGeneral(context, formattedMessage)
               },
               shape = RoundedCornerShape(12.dp),
-              modifier = Modifier.weight(0.8f)
+              modifier = Modifier.weight(0.7f)
             ) {
-              Icon(Icons.Default.Share, contentDescription = null, modifier = Modifier.size(16.dp))
+              Icon(Icons.Default.Share, contentDescription = null, modifier = Modifier.size(15.dp))
+              Spacer(Modifier.width(3.dp))
+              Text("مشاركة", fontSize = 12.sp)
+            }
+
+            // Direct SMS Button
+            OutlinedButton(
+              onClick = {
+                ClinicInfo.sendSms(context, phoneNumber.ifEmpty { ClinicInfo.PHONE_PRIMARY }, formattedMessage)
+              },
+              colors = ButtonDefaults.outlinedButtonColors(contentColor = Color(0xFF0284C7)),
+              border = BorderStroke(1.dp, Color(0xFF0284C7)),
+              shape = RoundedCornerShape(12.dp),
+              modifier = Modifier
+                .weight(0.9f)
+                .testTag("send_sms_action_btn")
+            ) {
+              Icon(Icons.Default.Sms, contentDescription = null, modifier = Modifier.size(16.dp), tint = Color(0xFF0284C7))
               Spacer(Modifier.width(4.dp))
-              Text("مشاركة", fontSize = 13.sp)
+              Text("رسالة SMS", fontSize = 12.sp, fontWeight = FontWeight.Bold)
             }
 
             // Primary Send WhatsApp Button
@@ -434,7 +451,7 @@ fun WhatsAppNotificationDialog(
               ),
               shape = RoundedCornerShape(12.dp),
               modifier = Modifier
-                .weight(1.5f)
+                .weight(1.3f)
                 .testTag("send_whatsapp_primary_action_btn")
             ) {
               Icon(

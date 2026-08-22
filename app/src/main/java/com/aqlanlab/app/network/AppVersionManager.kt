@@ -47,7 +47,7 @@ sealed class AppUpdateStatus {
 class AppVersionManager(private val context: Context) {
   companion object {
     private const val TAG = "AppVersionManager"
-    const val DEFAULT_MINIMUM_VERSION_CODE = 2 // 1.1.0 is required
+    const val DEFAULT_MINIMUM_VERSION_CODE = 1
     const val VERSION_CONFIG_DOC = "version_config"
   }
 
@@ -157,6 +157,40 @@ class AppVersionManager(private val context: Context) {
       val status = evaluateVersion(BuildConfig.VERSION_CODE, fallbackConfig)
       _updateStatus.value = status
       status
+    }
+  }
+
+  /**
+   * Publishes / Updates the remote app version configuration in Firestore (Admin only).
+   */
+  suspend fun publishVersionConfig(newConfig: AppVersionConfig): Result<Unit> = withContext(Dispatchers.IO) {
+    try {
+      if (FirebaseApp.getApps(context).isEmpty()) {
+        return@withContext Result.failure(Exception("Firebase غير متصل"))
+      }
+      val firestore = FirebaseFirestore.getInstance()
+      val docRef = firestore.collection("app_config").document(VERSION_CONFIG_DOC)
+      docRef.set(
+        mapOf(
+          "minimumSupportedVersionCode" to newConfig.minimumSupportedVersionCode,
+          "latestVersionCode" to newConfig.latestVersionCode,
+          "latestVersionName" to newConfig.latestVersionName,
+          "isMandatoryUpdate" to newConfig.isMandatoryUpdate,
+          "updateTitleAr" to newConfig.updateTitleAr,
+          "updateMessageAr" to newConfig.updateMessageAr,
+          "releaseNotesAr" to newConfig.releaseNotesAr,
+          "updateUrl" to newConfig.updateUrl,
+          "updatedAt" to System.currentTimeMillis()
+        ),
+        SetOptions.merge()
+      ).await()
+
+      _versionConfig.value = newConfig
+      _updateStatus.value = evaluateVersion(BuildConfig.VERSION_CODE, newConfig)
+      Result.success(Unit)
+    } catch (e: Exception) {
+      Log.e(TAG, "Failed to publish version config: ${e.message}", e)
+      Result.failure(e)
     }
   }
 

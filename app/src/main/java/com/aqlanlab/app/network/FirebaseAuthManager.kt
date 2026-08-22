@@ -1,5 +1,6 @@
 package com.aqlanlab.app.network
 
+import android.app.Activity
 import android.content.Context
 import android.util.Log
 import androidx.credentials.CredentialManager
@@ -12,17 +13,23 @@ import com.aqlanlab.app.util.DeviceSecurityManager
 import com.google.android.libraries.identity.googleid.GetSignInWithGoogleOption
 import com.google.android.libraries.identity.googleid.GoogleIdTokenCredential
 import com.google.firebase.FirebaseApp
+import com.google.firebase.FirebaseException
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.auth.FirebaseUser
 import com.google.firebase.auth.GoogleAuthProvider
+import com.google.firebase.auth.PhoneAuthCredential
+import com.google.firebase.auth.PhoneAuthOptions
+import com.google.firebase.auth.PhoneAuthProvider
 import com.google.firebase.firestore.ListenerRegistration
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.SetOptions
+import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.tasks.await
 import kotlinx.coroutines.withContext
 
@@ -76,6 +83,9 @@ class FirebaseAuthManager(
 
   private fun initFirebaseAuth() {
     try {
+      if (FirebaseApp.getApps(context).isEmpty()) {
+        FirebaseApp.initializeApp(context)
+      }
       if (FirebaseApp.getApps(context).isNotEmpty()) {
         firebaseAuth = FirebaseAuth.getInstance()
         val current = firebaseAuth?.currentUser
@@ -86,6 +96,20 @@ class FirebaseAuthManager(
       }
     } catch (e: Exception) {
       Log.w(TAG, "Firebase Auth not available locally: ${e.message}")
+    }
+  }
+
+  private fun getFirebaseAuthSafe(): FirebaseAuth? {
+    return try {
+      if (firebaseAuth != null) return firebaseAuth
+      if (FirebaseApp.getApps(context).isEmpty()) {
+        FirebaseApp.initializeApp(context)
+      }
+      firebaseAuth = FirebaseAuth.getInstance()
+      firebaseAuth
+    } catch (e: Exception) {
+      Log.w(TAG, "FirebaseAuth initialization note: ${e.message}")
+      null
     }
   }
 
@@ -138,7 +162,12 @@ class FirebaseAuthManager(
   suspend fun signInWithEmail(email: String, pass: String): Result<FirebaseUser?> = withContext(Dispatchers.IO) {
     _authState.value = AuthUiState.Loading
     try {
-      val auth = firebaseAuth ?: FirebaseAuth.getInstance()
+      val auth = getFirebaseAuthSafe()
+      if (auth == null) {
+        val errorMsg = "خدمة المصادقة السحابية غير مفعلة على هذا الجهاز حالياً. يمكنك استخدام رمز المشرف السريع أو التواصل مع د. عقلان."
+        _authState.value = AuthUiState.Error(errorMsg)
+        return@withContext Result.failure(Exception(errorMsg))
+      }
       val authResult = auth.signInWithEmailAndPassword(email.trim(), pass).await()
       val user = authResult.user
       _currentUser.value = user
@@ -181,7 +210,12 @@ class FirebaseAuthManager(
         val idToken = googleIdTokenCredential.idToken
         val authCredential = GoogleAuthProvider.getCredential(idToken, null)
 
-        val auth = firebaseAuth ?: FirebaseAuth.getInstance()
+        val auth = getFirebaseAuthSafe()
+        if (auth == null) {
+          val errorMsg = "خدمة المصادقة السحابية غير مفعلة على هذا الجهاز. يمكنك الدخول برمز المشرف أو طلب الاعتماد."
+          _authState.value = AuthUiState.Error(errorMsg)
+          return@withContext Result.failure(Exception(errorMsg))
+        }
         val authResult = auth.signInWithCredential(authCredential).await()
         val user = authResult.user
         _currentUser.value = user
@@ -215,10 +249,114 @@ class FirebaseAuthManager(
     }
   }
 
+  // ─── PHONE AUTHENTICATION (SMS OTP) ──────────────────────
+  var storedVerificationId: String? = null
+  var resendToken: PhoneAuthProvider.ForceResendingToken? = null
+
+  fun sendPhoneVerificationCode(
+    phoneNumber: String,
+    activity: Activity,
+    onCodeSent: (verificationId: String) -> Unit,
+    onError: (errorMessage: String) -> Unit,
+    onAutoVerified: (FirebaseUser?) -> Unit
+  ) {
+    _authState.value = AuthUiState.Loading
+    val auth = getFirebaseAuthSafe()
+    if (auth == null) {
+      val err = "خدمة المصادقة السحابية غير متوفرة حالياً"
+      _authState.value = AuthUiState.Error(err)
+      onError(err)
+      return
+    }
+
+    val callbacks = object : PhoneAuthProvider.OnVerificationStateChangedCallbacks() {
+      override fun onVerificationCompleted(credential: PhoneAuthCredential) {
+        coroutineScope.launch(Dispatchers.IO) {
+          try {
+            val result = auth.signInWithCredential(credential).await()
+            val user = result.user
+            _currentUser.value = user
+            if (user != null) {
+              withContext(Dispatchers.Main) {
+                checkAndSetAuthorizedUser(user)
+                onAutoVerified(user)
+              }
+            }
+          } catch (e: Exception) {
+            withContext(Dispatchers.Main) {
+              val msg = mapFirebaseError(e)
+              _authState.value = AuthUiState.Error(msg)
+              onError(msg)
+            }
+          }
+        }
+      }
+
+      override fun onVerificationFailed(e: FirebaseException) {
+        val msg = mapFirebaseError(e)
+        _authState.value = AuthUiState.Error(msg)
+        onError(msg)
+      }
+
+      override fun onCodeSent(
+        verificationId: String,
+        token: PhoneAuthProvider.ForceResendingToken
+      ) {
+        storedVerificationId = verificationId
+        resendToken = token
+        _authState.value = AuthUiState.Idle
+        onCodeSent(verificationId)
+      }
+    }
+
+    val options = PhoneAuthOptions.newBuilder(auth)
+      .setPhoneNumber(phoneNumber.trim())
+      .setTimeout(60L, TimeUnit.SECONDS)
+      .setActivity(activity)
+      .setCallbacks(callbacks)
+      .build()
+    PhoneAuthProvider.verifyPhoneNumber(options)
+  }
+
+  suspend fun verifyPhoneCodeAndSignIn(
+    verificationId: String,
+    code: String
+  ): Result<FirebaseUser?> = withContext(Dispatchers.IO) {
+    _authState.value = AuthUiState.Loading
+    try {
+      val auth = getFirebaseAuthSafe() ?: return@withContext Result.failure(Exception("خدمة المصادقة السحابية غير متوفرة"))
+      val credential = PhoneAuthProvider.getCredential(verificationId, code.trim())
+      val result = auth.signInWithCredential(credential).await()
+      val user = result.user
+      _currentUser.value = user
+      if (user != null) {
+        withContext(Dispatchers.Main) {
+          checkAndSetAuthorizedUser(user)
+        }
+        Result.success(user)
+      } else {
+        val err = "تعذر تسجيل الدخول بالرمز المدخل"
+        _authState.value = AuthUiState.Error(err)
+        Result.failure(Exception(err))
+      }
+    } catch (e: Exception) {
+      val msg = mapFirebaseError(e)
+      _authState.value = AuthUiState.Error(msg)
+      Result.failure(Exception(msg))
+    }
+  }
+
   suspend fun sendPasswordReset(email: String): Result<Unit> = withContext(Dispatchers.IO) {
     try {
-      val auth = firebaseAuth ?: FirebaseAuth.getInstance()
-      auth.sendPasswordResetEmail(email.trim()).await()
+      val trimmedEmail = email.trim()
+      if (trimmedEmail.isBlank() || !trimmedEmail.contains("@")) {
+        return@withContext Result.failure(Exception("يرجى إدخال بريد إلكتروني صحيح"))
+      }
+      val auth = getFirebaseAuthSafe()
+      if (auth == null) {
+        return@withContext Result.failure(Exception("خدمة المصادقة السحابية غير متصلة حالياً على هذا الجهاز."))
+      }
+      auth.sendPasswordResetEmail(trimmedEmail).await()
       Result.success(Unit)
     } catch (e: Exception) {
       Log.e(TAG, "Password reset error", e)
@@ -541,6 +679,8 @@ class FirebaseAuthManager(
   private fun mapFirebaseError(e: Exception): String {
     val msg = e.message ?: ""
     return when {
+      msg.contains("not initialized", ignoreCase = true) || msg.contains("FirebaseApp", ignoreCase = true) ->
+        "خدمة المصادقة السحابية غير متصلة حالياً على هذا الجهاز. يمكنك استخدام رمز المشرف السريع أو طلب اعتماد حسابك."
       msg.contains("user-not-found", ignoreCase = true) || msg.contains("invalid-credential", ignoreCase = true) ->
         "اسم المستخدم / البريد أو كلمة المرور غير صحيحة"
       msg.contains("wrong-password", ignoreCase = true) ->

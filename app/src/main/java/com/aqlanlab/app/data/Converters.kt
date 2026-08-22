@@ -39,4 +39,10 @@ class Converters {
 
   @TypeConverter
   fun toInventoryTransactionType(value: String): InventoryTransactionType = runCatching { InventoryTransactionType.valueOf(value) }.getOrDefault(InventoryTransactionType.STOCK_IN)
+
+  @TypeConverter
+  fun fromDeviceStatus(value: DeviceStatus): String = value.name
+
+  @TypeConverter
+  fun toDeviceStatus(value: String): DeviceStatus = runCatching { DeviceStatus.valueOf(value) }.getOrDefault(DeviceStatus.PENDING)
 }

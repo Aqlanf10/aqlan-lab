@@ -40,13 +40,34 @@ class MainActivity : ComponentActivity() {
     super.onCreate(savedInstanceState)
     enableEdgeToEdge()
 
-    NotificationHelper.init(this)
-    com.aqlanlab.app.network.AppCheckManager.initialize(this)
-
-    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-      if (ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
-        requestNotificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+    try {
+      if (com.google.firebase.FirebaseApp.getApps(this).isEmpty()) {
+        com.google.firebase.FirebaseApp.initializeApp(this)
       }
+    } catch (e: Throwable) {
+      android.util.Log.w("MainActivity", "FirebaseApp init note: ${e.message}")
+    }
+
+    try {
+      NotificationHelper.init(this)
+    } catch (e: Throwable) {
+      android.util.Log.w("MainActivity", "NotificationHelper init note: ${e.message}")
+    }
+
+    try {
+      com.aqlanlab.app.network.AppCheckManager.initialize(this)
+    } catch (e: Throwable) {
+      android.util.Log.w("MainActivity", "AppCheckManager init note: ${e.message}")
+    }
+
+    try {
+      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+          requestNotificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+        }
+      }
+    } catch (e: Throwable) {
+      android.util.Log.w("MainActivity", "Notification permission note: ${e.message}")
     }
 
     setContent {

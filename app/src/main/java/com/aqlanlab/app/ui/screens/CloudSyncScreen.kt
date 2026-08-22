@@ -357,22 +357,18 @@ fun CloudSyncScreen(
             // Primary Sync to Firestore Button
             Button(
               onClick = {
-                viewModel.triggerFirestoreBackup { success ->
-                  if (success) {
-                    Toast.makeText(context, "تم رفع ومزامنة قاعدة البيانات إلى Firebase بنجاح!", Toast.LENGTH_LONG).show()
-                  } else {
-                    Toast.makeText(context, "حدث خطأ أثناء المزامنة السحابية", Toast.LENGTH_SHORT).show()
-                  }
+                viewModel.syncShipmentsToFirestore { success, msg ->
+                  Toast.makeText(context, msg, if (success) Toast.LENGTH_LONG else Toast.LENGTH_SHORT).show()
                 }
               },
               modifier = Modifier
                 .fillMaxWidth()
-                .testTag("backup_to_firestore_button"),
+                .testTag("sync_to_cloud_button"),
               enabled = syncState != SyncState.SYNCING
             ) {
               Icon(Icons.Default.CloudUpload, contentDescription = null, modifier = Modifier.size(20.dp))
               Spacer(Modifier.width(8.dp))
-              Text("مزامنة ورفع إلى Firestore السحابي", fontWeight = FontWeight.Bold)
+              Text("مزامنة الإرساليات مع السحابة (Sync to Cloud)", fontWeight = FontWeight.Bold)
             }
 
             // Auto-Sync Toggle Row

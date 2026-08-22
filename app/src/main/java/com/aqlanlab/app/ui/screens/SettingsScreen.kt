@@ -1,6 +1,7 @@
 package com.aqlanlab.app.ui.screens
 
 import android.content.Intent
+import android.widget.Toast
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -26,8 +27,11 @@ import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.aqlanlab.app.BuildConfig
 import com.aqlanlab.app.data.models.User
 import com.aqlanlab.app.data.models.UserRole
+import com.aqlanlab.app.network.AppUpdateStatus
+import com.aqlanlab.app.network.AppVersionConfig
 import com.aqlanlab.app.ui.components.DateUtils
 import com.aqlanlab.app.ui.components.RoleBadge
 import com.aqlanlab.app.ui.theme.RoleAdminColor
@@ -45,6 +49,7 @@ fun SettingsScreen(
   onNavigateToAuditLog: () -> Unit,
   onNavigateToCloudSync: () -> Unit,
   onNavigateToUserManagement: () -> Unit,
+  onNavigateToMessagingGateways: () -> Unit = {},
   onOpenUserSwitchDialog: () -> Unit,
   onBack: () -> Unit,
   modifier: Modifier = Modifier
@@ -59,6 +64,7 @@ fun SettingsScreen(
   val labSummaries by viewModel.labAccountSummaries.collectAsState()
   val lowStockCount by viewModel.lowStockCount.collectAsState()
 
+  var showClearDemoConfirm by remember { mutableStateOf(false) }
   var showWipeTransactionsConfirm by remember { mutableStateOf(false) }
   var showFactoryResetConfirm by remember { mutableStateOf(false) }
   var showResetDemoConfirm by remember { mutableStateOf(false) }
@@ -76,6 +82,21 @@ fun SettingsScreen(
   var newDoctorPin by remember { mutableStateOf("") }
   var confirmDoctorPin by remember { mutableStateOf("") }
   var changePinError by remember { mutableStateOf("") }
+
+  // App In-App Update States
+  val updateStatus by viewModel.updateStatus.collectAsState()
+  val versionConfig by viewModel.versionConfig.collectAsState()
+  var isCheckingUpdatesManually by remember { mutableStateOf(false) }
+  var showPublishVersionDialog by remember { mutableStateOf(false) }
+  var pubLatestVersionName by remember(versionConfig) { mutableStateOf(versionConfig.latestVersionName) }
+  var pubLatestVersionCode by remember(versionConfig) { mutableStateOf(versionConfig.latestVersionCode.toString()) }
+  var pubMinVersionCode by remember(versionConfig) { mutableStateOf(versionConfig.minimumSupportedVersionCode.toString()) }
+  var pubUpdateTitle by remember(versionConfig) { mutableStateOf(versionConfig.updateTitleAr) }
+  var pubUpdateMessage by remember(versionConfig) { mutableStateOf(versionConfig.updateMessageAr) }
+  var pubReleaseNotes by remember(versionConfig) { mutableStateOf(versionConfig.releaseNotesAr) }
+  var pubUpdateUrl by remember(versionConfig) { mutableStateOf(versionConfig.updateUrl) }
+  var isMandatorySwitch by remember(versionConfig) { mutableStateOf(versionConfig.isMandatoryUpdate) }
+  var isPublishingVersion by remember { mutableStateOf(false) }
 
   Scaffold(
     topBar = {
@@ -263,6 +284,118 @@ fun SettingsScreen(
               }
             }
 
+            // Exclusive Owner Sync to Cloud & Backup Action
+            if (activeUser.role == UserRole.SUPER_ADMIN || activeUser.role == UserRole.ADMIN) {
+              val syncState by viewModel.syncState.collectAsState()
+              var isOwnerSyncing by remember { mutableStateOf(false) }
+
+              Surface(
+                shape = RoundedCornerShape(12.dp),
+                color = Color(0xFFEFF6FF),
+                border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF3B82F6)),
+                modifier = Modifier.fillMaxWidth()
+              ) {
+                Column(
+                  modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(12.dp),
+                  verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                  Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                  ) {
+                    Icon(Icons.Default.CloudSync, contentDescription = null, tint = Color(0xFF1D4ED8), modifier = Modifier.size(20.dp))
+                    Text(
+                      text = "مزامنة ونسخ الإرساليات إلى السحابة (Sync to Cloud)",
+                      fontWeight = FontWeight.Bold,
+                      fontSize = 13.sp,
+                      color = Color(0xFF1E40AF)
+                    )
+                  }
+                  Text(
+                    text = "رفع وحفظ قاعدة بيانات الإرساليات المحلية (Room) إلى خوادم Firebase Firestore السحابية فوراً لحمايتها من الفقدان ومشاركتها مع الأجهزة المصرحة.",
+                    fontSize = 11.sp,
+                    color = Color(0xFF1E3A8A),
+                    lineHeight = 16.sp
+                  )
+                  Button(
+                    onClick = {
+                      isOwnerSyncing = true
+                      viewModel.syncShipmentsToFirestore { success, msg ->
+                        isOwnerSyncing = false
+                        android.widget.Toast.makeText(context, msg, if (success) android.widget.Toast.LENGTH_LONG else android.widget.Toast.LENGTH_SHORT).show()
+                      }
+                    },
+                    enabled = syncState != com.aqlanlab.app.network.SyncState.SYNCING && !isOwnerSyncing,
+                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2563EB)),
+                    shape = RoundedCornerShape(8.dp),
+                    modifier = Modifier.fillMaxWidth().testTag("owner_sync_to_cloud_btn")
+                  ) {
+                    if (syncState == com.aqlanlab.app.network.SyncState.SYNCING || isOwnerSyncing) {
+                      CircularProgressIndicator(modifier = Modifier.size(16.dp), color = Color.White, strokeWidth = 2.dp)
+                      Spacer(Modifier.width(8.dp))
+                      Text("جاري المزامنة السحابية لـ Firestore...", fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                    } else {
+                      Icon(Icons.Default.CloudUpload, contentDescription = null, modifier = Modifier.size(16.dp))
+                      Spacer(Modifier.width(6.dp))
+                      Text("مزامنة الإرساليات مع السحابة الآن (Sync to Cloud)", fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                    }
+                  }
+                }
+              }
+            }
+
+            // Exclusive Owner Mock Data Wipe Quick Action
+            if (activeUser.role == UserRole.SUPER_ADMIN || activeUser.role == UserRole.ADMIN) {
+              Surface(
+                shape = RoundedCornerShape(12.dp),
+                color = Color(0xFFFEF3C7),
+                border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFFF59E0B)),
+                modifier = Modifier.fillMaxWidth()
+              ) {
+                Column(
+                  modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(12.dp),
+                  verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                  Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                  ) {
+                    Icon(Icons.Default.CleaningServices, contentDescription = null, tint = Color(0xFFB45309), modifier = Modifier.size(20.dp))
+                    Text(
+                      text = "خاص بمالك البرنامج: مسح البيانات التجريبية",
+                      fontWeight = FontWeight.Bold,
+                      fontSize = 13.sp,
+                      color = Color(0xFF92400E)
+                    )
+                  }
+                  Text(
+                    text = "يمسح كل الإرساليات والمدفوعات وسندات الصرف الوهمية التي تم تسجيلها للتجربة، مع الاحتفاظ الكامل بقائمة المعامل، والأسعار، وأنواع الأعمال، وإعدادات المستخدمين للبدء بسجلات نظيفة فوراً.",
+                    fontSize = 11.sp,
+                    color = Color(0xFF78350F),
+                    lineHeight = 16.sp
+                  )
+                  Button(
+                    onClick = {
+                      enteredPin = ""
+                      pinError = ""
+                      showClearDemoConfirm = true
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFD97706)),
+                    shape = RoundedCornerShape(8.dp),
+                    modifier = Modifier.fillMaxWidth().testTag("owner_clear_mock_data_btn")
+                  ) {
+                    Icon(Icons.Default.DeleteSweep, contentDescription = null, modifier = Modifier.size(16.dp))
+                    Spacer(Modifier.width(6.dp))
+                    Text("مسح البيانات الوهمية والتجريبية الآن", fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                  }
+                }
+              }
+            }
+
             Row(
               modifier = Modifier.fillMaxWidth(),
               horizontalArrangement = Arrangement.spacedBy(8.dp)
@@ -381,15 +514,56 @@ fun SettingsScreen(
             }
 
             Text(
-              text = "إرسال إشعارات فورية على شريط الهاتف عند إضافة إرسالية جديدة، أو تغيير حالة طلب معملي (قيد التنفيذ / جاهز / تم الاستلام)، وتنبيهات الحالات المستعجلة.",
+              text = "إرسال إشعارات فورية على شريط الهاتف عند إضافة إرسالية جديدة، تغيير حالة طلب معملي، وتنبيهات تلقائية ذكية عند اقتراب تاريخ استحقاق تسليم أي إرسالية مسجلة في قاعدة بيانات Room (خلال 24-48 ساعة أو عند التأخير).",
               style = MaterialTheme.typography.bodySmall,
               color = MaterialTheme.colorScheme.onSurfaceVariant
             )
 
             Row(
               modifier = Modifier.fillMaxWidth(),
-              horizontalArrangement = Arrangement.End
+              horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
+              OutlinedButton(
+                onClick = {
+                  viewModel.checkDueDeliveriesNow { count ->
+                    if (count > 0) {
+                      android.widget.Toast.makeText(context, "تم العثور على ($count) إرسالية قريبة أو متأخرة وإرسال التنبيهات ⏰", android.widget.Toast.LENGTH_LONG).show()
+                    } else {
+                      // Trigger sample delivery reminder for testing
+                      com.aqlanlab.app.util.NotificationHelper.showDeliveryApproachingNotification(
+                        context = context,
+                        shipment = com.aqlanlab.app.data.models.Shipment(
+                          id = 8888,
+                          shipmentNumber = "AQL-DUE-ALERT",
+                          clinicOrDoctorName = com.aqlanlab.app.ui.components.ClinicInfo.DOCTOR_NAME,
+                          patientName = "مريض موعد التسليم اليوم (تجربة)",
+                          labId = 1,
+                          labName = "معمل النخبة للأسنان",
+                          workTypeId = 1,
+                          workTypeName = "جسر زركونيا 4 قطع",
+                          pieceCount = 4,
+                          toothNumbers = "13-16",
+                          shade = "A1",
+                          expectedDeliveryDate = System.currentTimeMillis() + 3600000L * 5, // 5 hours from now
+                          isUrgent = false,
+                          status = com.aqlanlab.app.data.models.ShipmentStatus.IN_PROGRESS
+                        ),
+                        hoursRemaining = 5,
+                        isOverdue = false
+                      )
+                      android.widget.Toast.makeText(context, "تم إرسال إشعار تجريبي لاقتراب موعد التسليم ⏰", android.widget.Toast.LENGTH_SHORT).show()
+                    }
+                  }
+                },
+                colors = ButtonDefaults.outlinedButtonColors(contentColor = Color(0xFFD97706)),
+                shape = RoundedCornerShape(10.dp),
+                modifier = Modifier.weight(1.2f).testTag("check_due_deliveries_btn")
+              ) {
+                Icon(Icons.Default.Alarm, contentDescription = null, modifier = Modifier.size(16.dp), tint = Color(0xFFD97706))
+                Spacer(Modifier.width(4.dp))
+                Text("فحص مواعيد التسليم ⏰", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+              }
+
               OutlinedButton(
                 onClick = {
                   com.aqlanlab.app.util.NotificationHelper.showNewShipmentNotification(
@@ -414,11 +588,12 @@ fun SettingsScreen(
                   )
                   android.widget.Toast.makeText(context, "تم إرسال إشعار تجريبي بنجاح 🔔", android.widget.Toast.LENGTH_SHORT).show()
                 },
-                shape = RoundedCornerShape(10.dp)
+                shape = RoundedCornerShape(10.dp),
+                modifier = Modifier.weight(1f)
               ) {
                 Icon(Icons.Default.Notifications, contentDescription = null, modifier = Modifier.size(16.dp))
-                Spacer(Modifier.width(6.dp))
-                Text("إرسال إشعار تجريبي", fontSize = 12.sp)
+                Spacer(Modifier.width(4.dp))
+                Text("إشعار تجريبي", fontSize = 11.sp)
               }
             }
           }
@@ -438,6 +613,13 @@ fun SettingsScreen(
               subtitle = "إضافة مستخدمين، صلاحيات الوصول، وتعيين كلمات السر",
               icon = Icons.Default.ManageAccounts,
               onClick = onNavigateToUserManagement
+            )
+            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
+            SettingsMenuItem(
+              title = "بوابات الرسائل القصيرة والواتساب (SMS & WhatsApp Gateway)",
+              subtitle = "ربط يمن موبايل، اسم المرسل المعتمد (Sender ID)، وبوابات الواتساب السحابية",
+              icon = Icons.Default.Sms,
+              onClick = onNavigateToMessagingGateways
             )
             HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
             SettingsMenuItem(
@@ -567,8 +749,236 @@ fun SettingsScreen(
         }
       }
 
+      // 4.5. In-App Updates & App Version Card (فحص وتحديث التطبيق)
+      item {
+        Card(
+          shape = RoundedCornerShape(16.dp),
+          colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+          elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
+          modifier = Modifier.testTag("app_updates_card")
+        ) {
+          Column(
+            modifier = Modifier
+              .fillMaxWidth()
+              .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+          ) {
+            Row(
+              modifier = Modifier.fillMaxWidth(),
+              horizontalArrangement = Arrangement.SpaceBetween,
+              verticalAlignment = Alignment.CenterVertically
+            ) {
+              Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+              ) {
+                Icon(
+                  imageVector = Icons.Default.SystemUpdate,
+                  contentDescription = null,
+                  tint = MaterialTheme.colorScheme.primary
+                )
+                Text(
+                  text = "تحديثات وإصدار التطبيق (In-App Updates)",
+                  style = MaterialTheme.typography.titleMedium,
+                  fontWeight = FontWeight.Bold
+                )
+              }
+
+              // Current Installed Version Badge
+              Surface(
+                color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.7f),
+                shape = RoundedCornerShape(8.dp)
+              ) {
+                Text(
+                  text = "v${BuildConfig.VERSION_NAME}",
+                  style = MaterialTheme.typography.labelMedium,
+                  fontWeight = FontWeight.Bold,
+                  color = MaterialTheme.colorScheme.onPrimaryContainer,
+                  modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                )
+              }
+            }
+
+            // Version Status Card
+            val isNewerAvailable = BuildConfig.VERSION_CODE < versionConfig.latestVersionCode
+            val isMandatory = BuildConfig.VERSION_CODE < versionConfig.minimumSupportedVersionCode
+
+            Surface(
+              shape = RoundedCornerShape(12.dp),
+              color = when {
+                isMandatory -> Color(0xFFFEE2E2)
+                isNewerAvailable -> Color(0xFFFEF3C7)
+                else -> Color(0xFFDCFCE7)
+              },
+              modifier = Modifier.fillMaxWidth()
+            ) {
+              Row(
+                modifier = Modifier.padding(12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
+              ) {
+                Icon(
+                  imageVector = when {
+                    isMandatory -> Icons.Default.Warning
+                    isNewerAvailable -> Icons.Default.NewReleases
+                    else -> Icons.Default.CheckCircle
+                  },
+                  contentDescription = null,
+                  tint = when {
+                    isMandatory -> Color(0xFFDC2626)
+                    isNewerAvailable -> Color(0xFFD97706)
+                    else -> Color(0xFF16A34A)
+                  },
+                  modifier = Modifier.size(28.dp)
+                )
+
+                Column(modifier = Modifier.weight(1f)) {
+                  Text(
+                    text = when {
+                      isMandatory -> "تحديث أمني إجباري مطلوب (v${versionConfig.latestVersionName})"
+                      isNewerAvailable -> "يتوفر إصدار جديد جاهز للتنزيل! (v${versionConfig.latestVersionName})"
+                      else -> "التطبيق محدث لأحدث إصدار متوفر (v${BuildConfig.VERSION_NAME})"
+                    },
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 13.sp,
+                    color = when {
+                      isMandatory -> Color(0xFF991B1B)
+                      isNewerAvailable -> Color(0xFF92400E)
+                      else -> Color(0xFF166534)
+                    }
+                  )
+                  Text(
+                    text = when {
+                      isMandatory -> "الإصدار المثبت قديم، يرجى التحديث لمتابعة المزامنة السحابية."
+                      isNewerAvailable -> "يتضمن الإصدار الجديد ميزات وتحسينات لضمان أفضل أداء."
+                      else -> "رقم البناء الحالي: (${BuildConfig.VERSION_CODE}) متوافق تماماً مع السحابة."
+                    },
+                    fontSize = 11.sp,
+                    color = when {
+                      isMandatory -> Color(0xFF7F1D1D)
+                      isNewerAvailable -> Color(0xFF78350F)
+                      else -> Color(0xFF14532D)
+                    }
+                  )
+                }
+              }
+            }
+
+            // Release Notes snippet if available
+            if (versionConfig.releaseNotesAr.isNotBlank()) {
+              Surface(
+                shape = RoundedCornerShape(8.dp),
+                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+                modifier = Modifier.fillMaxWidth()
+              ) {
+                Column(modifier = Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                  Text(
+                    text = "📋 ما الجديد في الإصدار (v${versionConfig.latestVersionName}):",
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 12.sp,
+                    color = MaterialTheme.colorScheme.primary
+                  )
+                  Text(
+                    text = versionConfig.releaseNotesAr,
+                    fontSize = 11.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    lineHeight = 16.sp
+                  )
+                }
+              }
+            }
+
+            // Action Buttons Row
+            Row(
+              modifier = Modifier.fillMaxWidth(),
+              horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+              // 1. Manual Check Now Button
+              OutlinedButton(
+                onClick = {
+                  isCheckingUpdatesManually = true
+                  viewModel.checkForAppUpdates { status ->
+                    isCheckingUpdatesManually = false
+                    when (status) {
+                      is AppUpdateStatus.UpToDate -> {
+                        Toast.makeText(context, "✅ التطبيق محدث لأحدث إصدار (v${BuildConfig.VERSION_NAME})", Toast.LENGTH_SHORT).show()
+                      }
+                      is AppUpdateStatus.OptionalUpdateAvailable -> {
+                        Toast.makeText(context, "🔔 يتوفر إصدار جديد جاهز للتنزيل (v${status.config.latestVersionName})", Toast.LENGTH_LONG).show()
+                      }
+                      is AppUpdateStatus.MandatoryUpdateRequired -> {
+                        Toast.makeText(context, "⚠️ يتوفر تحديث إجباري مطلوب (v${status.config.latestVersionName})", Toast.LENGTH_LONG).show()
+                      }
+                      is AppUpdateStatus.CheckFailed -> {
+                        Toast.makeText(context, "تعذر فحص التحديثات: ${status.error}", Toast.LENGTH_SHORT).show()
+                      }
+                      else -> {}
+                    }
+                  }
+                },
+                enabled = !isCheckingUpdatesManually,
+                shape = RoundedCornerShape(10.dp),
+                modifier = Modifier.weight(1f).testTag("check_updates_now_btn")
+              ) {
+                if (isCheckingUpdatesManually) {
+                  CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+                  Spacer(Modifier.width(6.dp))
+                  Text("جاري الفحص...", fontSize = 11.sp)
+                } else {
+                  Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(16.dp))
+                  Spacer(Modifier.width(4.dp))
+                  Text("فحص التحديثات", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                }
+              }
+
+              // 2. Direct Update / Download APK Button
+              Button(
+                onClick = {
+                  viewModel.appVersionManager.openUpdateUrl(versionConfig.updateUrl)
+                },
+                colors = ButtonDefaults.buttonColors(
+                  containerColor = if (isNewerAvailable) Color(0xFF0D9488) else MaterialTheme.colorScheme.primary
+                ),
+                shape = RoundedCornerShape(10.dp),
+                modifier = Modifier.weight(1.2f).testTag("download_update_btn")
+              ) {
+                Icon(Icons.Default.FileDownload, contentDescription = null, modifier = Modifier.size(16.dp))
+                Spacer(Modifier.width(4.dp))
+                Text(
+                  text = if (isNewerAvailable) "تنزيل التحديث الجديد 📲" else "تنزيل آخر APK",
+                  fontSize = 11.sp,
+                  fontWeight = FontWeight.Bold
+                )
+              }
+            }
+
+            // 3. Super Admin Publish Release Config Button
+            if (activeUser.role == UserRole.SUPER_ADMIN) {
+              TextButton(
+                onClick = {
+                  pubLatestVersionName = versionConfig.latestVersionName
+                  pubLatestVersionCode = versionConfig.latestVersionCode.toString()
+                  pubMinVersionCode = versionConfig.minimumSupportedVersionCode.toString()
+                  pubUpdateTitle = versionConfig.updateTitleAr
+                  pubUpdateMessage = versionConfig.updateMessageAr
+                  pubReleaseNotes = versionConfig.releaseNotesAr
+                  pubUpdateUrl = versionConfig.updateUrl
+                  isMandatorySwitch = versionConfig.isMandatoryUpdate
+                  showPublishVersionDialog = true
+                },
+                modifier = Modifier.fillMaxWidth().testTag("publish_new_version_btn")
+              ) {
+                Icon(Icons.Default.Publish, contentDescription = null, modifier = Modifier.size(16.dp))
+                Spacer(Modifier.width(6.dp))
+                Text("إدارة ونشر إصدار جديد للمركز (Super Admin)", fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
+              }
+            }
+          }
+        }
+      }
+
       // 5. Data Management & Reset Section (تصفير السجلات وحذف البيانات)
-      if (activeUser.role == UserRole.ADMIN) {
+      if (activeUser.role == UserRole.SUPER_ADMIN || activeUser.role == UserRole.ADMIN) {
         item {
           Card(
             shape = RoundedCornerShape(16.dp),
@@ -605,20 +1015,20 @@ fun SettingsScreen(
                 color = MaterialTheme.colorScheme.onSurfaceVariant
               )
 
-              // Option 1: Wipe transactions only
+              // Option 1: Clear Mock/Demo Data (Owner's preferred safe clean)
               Button(
                 onClick = {
                   enteredPin = ""
                   pinError = ""
-                  showWipeTransactionsConfirm = true
+                  showClearDemoConfirm = true
                 },
-                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error),
+                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFD97706)),
                 shape = RoundedCornerShape(10.dp),
-                modifier = Modifier.fillMaxWidth().testTag("wipe_transactions_btn")
+                modifier = Modifier.fillMaxWidth().testTag("wipe_demo_data_btn")
               ) {
                 Icon(Icons.Default.CleaningServices, contentDescription = null, modifier = Modifier.size(18.dp))
                 Spacer(Modifier.width(8.dp))
-                Text("تصفير الإرساليات والمدفوعات (لبدء سجلات جديدة)", fontWeight = FontWeight.Bold)
+                Text("مسح البيانات الوهمية والتجريبية (لبدء سجلات جديدة)", fontWeight = FontWeight.Bold)
               }
 
               // Option 2: Full Factory Reset
@@ -651,6 +1061,119 @@ fun SettingsScreen(
           }
         }
       }
+    }
+
+    // --- Dialog 0: Dedicated Owner Clear Demo/Mock Data Confirmation ---
+    if (showClearDemoConfirm) {
+      AlertDialog(
+        onDismissRequest = { showClearDemoConfirm = false },
+        icon = {
+          Icon(
+            imageVector = Icons.Default.CleaningServices,
+            contentDescription = null,
+            tint = Color(0xFFD97706),
+            modifier = Modifier.size(36.dp)
+          )
+        },
+        title = {
+          Text(
+            text = "مسح البيانات التجريبية والبدء الفعلي 🧹",
+            fontWeight = FontWeight.Bold,
+            style = MaterialTheme.typography.titleMedium,
+            textAlign = androidx.compose.ui.text.style.TextAlign.Center
+          )
+        },
+        text = {
+          Column(
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+            modifier = Modifier.fillMaxWidth()
+          ) {
+            Text(
+              text = "هذا الإجراء مخصص لمالك التطبيق لبدء العمل الحقيقي للعيادة بسجلات جديدة ونظيفة:",
+              style = MaterialTheme.typography.bodyMedium,
+              fontWeight = FontWeight.SemiBold
+            )
+
+            Surface(
+              shape = RoundedCornerShape(10.dp),
+              color = Color(0xFFFEE2E2),
+              modifier = Modifier.fillMaxWidth()
+            ) {
+              Column(modifier = Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Text("🗑️ سيتم حذف:", fontWeight = FontWeight.Bold, color = Color(0xFF991B1B), fontSize = 12.sp)
+                Text("• كافة الإرساليات والطلبات التجريبية المسجلة", fontSize = 11.sp, color = Color(0xFF7F1D1D))
+                Text("• سندات الصرف والمدفوعات والحسابات التجريبية", fontSize = 11.sp, color = Color(0xFF7F1D1D))
+                Text("• سجل حركات المواد والمخزون وسجل التدقيق", fontSize = 11.sp, color = Color(0xFF7F1D1D))
+              }
+            }
+
+            Surface(
+              shape = RoundedCornerShape(10.dp),
+              color = Color(0xFFDCFCE7),
+              modifier = Modifier.fillMaxWidth()
+            ) {
+              Column(modifier = Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Text("🛡️ سيتم الإبقاء عليها دون حذف:", fontWeight = FontWeight.Bold, color = Color(0xFF166534), fontSize = 12.sp)
+                Text("• قائمة معامل الأسنان وأرقام الهواتف", fontSize = 11.sp, color = Color(0xFF14532D))
+                Text("• أسعار التركيبات وقوائم الخدمات المعتمدة", fontSize = 11.sp, color = Color(0xFF14532D))
+                Text("• أنواع الأعمال (الزركونيا، الإيماكس، الفينير...)", fontSize = 11.sp, color = Color(0xFF14532D))
+                Text("• حسابات المستخدمين وصلاحياتهم ورموز المرور", fontSize = 11.sp, color = Color(0xFF14532D))
+              }
+            }
+
+            Text(
+              text = "أدخل رمز المرور / PIN لتأكيد التنفيذ:",
+              style = MaterialTheme.typography.labelMedium,
+              fontWeight = FontWeight.Bold
+            )
+
+            OutlinedTextField(
+              value = enteredPin,
+              onValueChange = { enteredPin = it; pinError = "" },
+              label = { Text("رمز المرور / PIN") },
+              singleLine = true,
+              visualTransformation = androidx.compose.ui.text.input.PasswordVisualTransformation(),
+              keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(
+                keyboardType = androidx.compose.ui.text.input.KeyboardType.Password
+              ),
+              isError = pinError.isNotEmpty(),
+              modifier = Modifier.fillMaxWidth()
+            )
+
+            if (pinError.isNotEmpty()) {
+              Text(text = pinError, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+            }
+          }
+        },
+        confirmButton = {
+          Button(
+            onClick = {
+              if (viewModel.verifyPin(activeUser, enteredPin)) {
+                viewModel.clearMockDemoData {
+                  showClearDemoConfirm = false
+                  android.widget.Toast.makeText(
+                    context,
+                    "تم مسح البيانات التجريبية بنجاح! التطبيق جاهز الآن لتسجيل المرضى الحقيقيين 🦷✨",
+                    android.widget.Toast.LENGTH_LONG
+                  ).show()
+                }
+              } else {
+                pinError = "رمز المرور غير صحيح"
+              }
+            },
+            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFD97706))
+          ) {
+            Icon(Icons.Default.CleaningServices, contentDescription = null, modifier = Modifier.size(16.dp))
+            Spacer(Modifier.width(6.dp))
+            Text("تأكيد مسح البيانات التجريبية", fontWeight = FontWeight.Bold)
+          }
+        },
+        dismissButton = {
+          TextButton(onClick = { showClearDemoConfirm = false }) {
+            Text("إلغاء")
+          }
+        }
+      )
     }
 
     // --- Dialog 1: Wipe Transactions Only Confirmation ---
@@ -965,6 +1488,170 @@ fun SettingsScreen(
             Text("إلغاء")
           }
         }
+      )
+    }
+
+    // --- Dialog: Publish New App Version (Super Admin / Owner) ---
+    if (showPublishVersionDialog) {
+      AlertDialog(
+        onDismissRequest = { if (!isPublishingVersion) showPublishVersionDialog = false },
+        icon = {
+          Icon(
+            imageVector = Icons.Default.Publish,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.primary,
+            modifier = Modifier.size(32.dp)
+          )
+        },
+        title = {
+          Text(
+            text = "نشر وتحديث معلومات الإصدار في السحابة 🚀",
+            style = MaterialTheme.typography.titleMedium,
+            fontWeight = FontWeight.Bold,
+            textAlign = androidx.compose.ui.text.style.TextAlign.Center
+          )
+        },
+        text = {
+          Column(
+            modifier = Modifier
+              .fillMaxWidth()
+              .verticalScroll(rememberScrollState()),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+          ) {
+            Text(
+              text = "عند نشر هذا الإصدار، سيتم تنبيه كافة أجهزة الموظفين والأطباء المسجلين بالمركز وتوفير رابط التنزيل المباشر لهم فوراً.",
+              fontSize = 12.sp,
+              color = MaterialTheme.colorScheme.onSurfaceVariant,
+              lineHeight = 16.sp
+            )
+
+            OutlinedTextField(
+              value = pubLatestVersionName,
+              onValueChange = { pubLatestVersionName = it },
+              label = { Text("رقم الإصدار (Version Name)", fontSize = 12.sp) },
+              placeholder = { Text("1.2.0") },
+              singleLine = true,
+              modifier = Modifier.fillMaxWidth()
+            )
+
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+              OutlinedTextField(
+                value = pubLatestVersionCode,
+                onValueChange = { pubLatestVersionCode = it },
+                label = { Text("كود الإصدار (Build Code)", fontSize = 11.sp) },
+                placeholder = { Text("2") },
+                singleLine = true,
+                modifier = Modifier.weight(1f)
+              )
+              OutlinedTextField(
+                value = pubMinVersionCode,
+                onValueChange = { pubMinVersionCode = it },
+                label = { Text("الحد الأدنى المطلوب", fontSize = 11.sp) },
+                placeholder = { Text("1") },
+                singleLine = true,
+                modifier = Modifier.weight(1f)
+              )
+            }
+
+            OutlinedTextField(
+              value = pubUpdateTitle,
+              onValueChange = { pubUpdateTitle = it },
+              label = { Text("عنوان التنبيه للمستخدمين", fontSize = 12.sp) },
+              singleLine = true,
+              modifier = Modifier.fillMaxWidth()
+            )
+
+            OutlinedTextField(
+              value = pubUpdateMessage,
+              onValueChange = { pubUpdateMessage = it },
+              label = { Text("رسالة التحديث", fontSize = 12.sp) },
+              maxLines = 3,
+              modifier = Modifier.fillMaxWidth()
+            )
+
+            OutlinedTextField(
+              value = pubReleaseNotes,
+              onValueChange = { pubReleaseNotes = it },
+              label = { Text("ما الجديد في هذا الإصدار (Release Notes)", fontSize = 12.sp) },
+              placeholder = { Text("• ميزة 1\n• ميزة 2") },
+              minLines = 3,
+              maxLines = 5,
+              modifier = Modifier.fillMaxWidth()
+            )
+
+            OutlinedTextField(
+              value = pubUpdateUrl,
+              onValueChange = { pubUpdateUrl = it },
+              label = { Text("رابط تنزيل التحديث المباشر (APK / Web URL)", fontSize = 12.sp) },
+              placeholder = { Text("https://...") },
+              singleLine = true,
+              modifier = Modifier.fillMaxWidth()
+            )
+
+            Row(
+              modifier = Modifier.fillMaxWidth(),
+              horizontalArrangement = Arrangement.SpaceBetween,
+              verticalAlignment = Alignment.CenterVertically
+            ) {
+              Text("إلزام كافة الأجهزة بالتحديث (Mandatory)", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+              Switch(
+                checked = isMandatorySwitch,
+                onCheckedChange = { isMandatorySwitch = it }
+              )
+            }
+          }
+        },
+        confirmButton = {
+          Button(
+            onClick = {
+              val newCode = pubLatestVersionCode.toIntOrNull() ?: versionConfig.latestVersionCode
+              val minCode = pubMinVersionCode.toIntOrNull() ?: versionConfig.minimumSupportedVersionCode
+              val newConfig = AppVersionConfig(
+                currentAppVersionCode = BuildConfig.VERSION_CODE,
+                currentAppVersionName = BuildConfig.VERSION_NAME,
+                minimumSupportedVersionCode = minCode,
+                latestVersionCode = newCode,
+                latestVersionName = pubLatestVersionName.trim().ifEmpty { BuildConfig.VERSION_NAME },
+                isMandatoryUpdate = isMandatorySwitch,
+                updateTitleAr = pubUpdateTitle.trim().ifEmpty { "تحديث جديد متوفر" },
+                updateMessageAr = pubUpdateMessage.trim().ifEmpty { "يتوفر إصدار جديد جاهز للتنزيل" },
+                releaseNotesAr = pubReleaseNotes.trim(),
+                updateUrl = pubUpdateUrl.trim().ifEmpty { versionConfig.updateUrl }
+              )
+              isPublishingVersion = true
+              viewModel.publishNewVersion(newConfig) { success, msg ->
+                isPublishingVersion = false
+                if (success) {
+                  showPublishVersionDialog = false
+                  Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
+                } else {
+                  Toast.makeText(context, msg, Toast.LENGTH_LONG).show()
+                }
+              }
+            },
+            enabled = !isPublishingVersion,
+            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF0D9488)),
+            shape = RoundedCornerShape(10.dp)
+          ) {
+            if (isPublishingVersion) {
+              CircularProgressIndicator(modifier = Modifier.size(16.dp), color = Color.White, strokeWidth = 2.dp)
+              Spacer(Modifier.width(6.dp))
+              Text("جاري النشر...")
+            } else {
+              Icon(Icons.Default.CloudUpload, contentDescription = null, modifier = Modifier.size(16.dp))
+              Spacer(Modifier.width(6.dp))
+              Text("حفظ ونشر التحديث بالسحابة", fontWeight = FontWeight.Bold)
+            }
+          }
+        },
+        dismissButton = {
+          TextButton(
+            onClick = { if (!isPublishingVersion) showPublishVersionDialog = false }
+          ) {
+            Text("إلغاء")
+          }
+        },
+        shape = RoundedCornerShape(20.dp)
       )
     }
   }

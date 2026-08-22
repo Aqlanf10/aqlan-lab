@@ -98,6 +98,196 @@ object PdfReportGenerator {
   }
 
   /**
+   * Generates a beautifully formatted, multi-page printable PDF report of the current list of dental shipments.
+   * Includes Patient Name, Work Type, Lab Name, Pieces, Expected Due Date, Financials, and Status.
+   */
+  fun generateShipmentsListPdf(
+    context: Context,
+    title: String = "تقرير قائمة إرساليات معمل الأسنان",
+    subtitle: String = "كشف متابعة الأعمال والإرساليات الحالية",
+    shipments: List<Shipment>,
+    currency: String = "USD",
+    userRole: UserRole = UserRole.ADMIN
+  ): File? {
+    return try {
+      val reportsDir = File(context.cacheDir, "reports").apply { if (!exists()) mkdirs() }
+      val timeStamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
+      val pdfFile = File(reportsDir, "Shipments_List_${timeStamp}.pdf")
+
+      val document = PdfDocument()
+      val rowsPerPage = 22
+      val totalPages = if (shipments.isEmpty()) 1 else ((shipments.size + rowsPerPage - 1) / rowsPerPage).coerceAtLeast(1)
+
+      val titlePaint = TextPaint().apply {
+        color = Color.parseColor("#0F2B48")
+        textSize = 13f
+        isFakeBoldText = true
+        isAntiAlias = true
+        textAlign = Paint.Align.RIGHT
+      }
+
+      val periodPaint = TextPaint().apply {
+        color = Color.parseColor("#475569")
+        textSize = 8.5f
+        isAntiAlias = true
+        textAlign = Paint.Align.RIGHT
+      }
+
+      val thTextPaint = TextPaint().apply {
+        color = Color.WHITE
+        textSize = 8f
+        isFakeBoldText = true
+        isAntiAlias = true
+        textAlign = Paint.Align.RIGHT
+      }
+
+      val rowPaint = TextPaint().apply {
+        color = Color.parseColor("#1E293B")
+        textSize = 7.5f
+        isAntiAlias = true
+        textAlign = Paint.Align.RIGHT
+      }
+
+      val totalPieces = shipments.sumOf { it.pieceCount }
+      val totalCost = shipments.sumOf { it.totalPrice }
+      val dateFormatted = SimpleDateFormat("yyyy/MM/dd hh:mm a", Locale.getDefault()).format(Date())
+
+      for (pageIndex in 0 until totalPages) {
+        val pageInfo = PdfDocument.PageInfo.Builder(PAGE_WIDTH, PAGE_HEIGHT, pageIndex + 1).create()
+        val page = document.startPage(pageInfo)
+        val canvas = page.canvas
+
+        drawPageBackground(canvas)
+        drawClinicHeader(canvas)
+
+        // Report Title Banner Box
+        val titleBgPaint = Paint().apply { color = Color.parseColor("#F8FAFC") }
+        canvas.drawRoundRect(RectF(30f, 120f, PAGE_WIDTH - 30f, 165f), 6f, 6f, titleBgPaint)
+
+        val borderPaint = Paint().apply {
+          color = Color.parseColor("#CBD5E1")
+          style = Paint.Style.STROKE
+          strokeWidth = 1f
+        }
+        canvas.drawRoundRect(RectF(30f, 120f, PAGE_WIDTH - 30f, 165f), 6f, 6f, borderPaint)
+
+        canvas.drawText(title, PAGE_WIDTH - 42f, 138f, titlePaint)
+        canvas.drawText("$subtitle  •  تاريخ التقرير: $dateFormatted  •  (صفحة ${pageIndex + 1} من $totalPages)", PAGE_WIDTH - 42f, 153f, periodPaint)
+
+        var startTableY = 175f
+
+        // On the first page, draw the stats overview card
+        if (pageIndex == 0) {
+          val statBoxRect = RectF(30f, 172f, PAGE_WIDTH - 30f, 210f)
+          drawDataBox(canvas, statBoxRect, bgColor = "#F1F5F9")
+          val colWidth = (PAGE_WIDTH - 60f) / 3f
+
+          drawTableCell(canvas, "عدد الإرساليات:", "${shipments.size} إرسالية", 30f, 180f, colWidth, isBold = true)
+          drawTableCell(canvas, "إجمالي القطع:", "$totalPieces قطعة سنية", 30f + colWidth, 180f, colWidth, isBold = true)
+          if (userRole != UserRole.STAFF) {
+            drawTableCell(
+              canvas,
+              "إجمالي المبالغ:",
+              "$totalCost $currency",
+              30f + (2 * colWidth),
+              180f,
+              colWidth,
+              isBold = true,
+              valueColor = Color.parseColor("#059669")
+            )
+          }
+          startTableY = 220f
+        }
+
+        // Shipments Table Header
+        val tableHeaderPaint = Paint().apply { color = Color.parseColor("#1E3A8A") }
+        canvas.drawRoundRect(RectF(30f, startTableY, PAGE_WIDTH - 30f, startTableY + 18f), 4f, 4f, tableHeaderPaint)
+
+        canvas.drawText("رقم الإرسالية", PAGE_WIDTH - 38f, startTableY + 12.5f, thTextPaint)
+        canvas.drawText("اسم المريض", PAGE_WIDTH - 110f, startTableY + 12.5f, thTextPaint)
+        canvas.drawText("نوع التركيبة / المعمل", PAGE_WIDTH - 230f, startTableY + 12.5f, thTextPaint)
+        canvas.drawText("قطع", PAGE_WIDTH - 365f, startTableY + 12.5f, thTextPaint)
+        canvas.drawText("الاستحقاق", PAGE_WIDTH - 400f, startTableY + 12.5f, thTextPaint)
+        canvas.drawText("الحالة", PAGE_WIDTH - 465f, startTableY + 12.5f, thTextPaint)
+        if (userRole != UserRole.STAFF) {
+          canvas.drawText("المبلغ", 65f, startTableY + 12.5f, thTextPaint)
+        }
+
+        var tableRowY = startTableY + 20f
+
+        val fromIndex = pageIndex * rowsPerPage
+        val toIndex = (fromIndex + rowsPerPage).coerceAtMost(shipments.size)
+        val pageShipments = if (shipments.isNotEmpty() && fromIndex < shipments.size) shipments.subList(fromIndex, toIndex) else emptyList()
+
+        pageShipments.forEachIndexed { idx, ship ->
+          val rowBg = if (idx % 2 == 0) "#FFFFFF" else "#F8FAFC"
+          canvas.drawRect(RectF(30f, tableRowY, PAGE_WIDTH - 30f, tableRowY + 16f), Paint().apply { color = Color.parseColor(rowBg) })
+
+          // Shipment Number
+          canvas.drawText(ship.shipmentNumber, PAGE_WIDTH - 38f, tableRowY + 11.5f, rowPaint)
+
+          // Patient Name
+          val patientName = ship.patientName.take(18)
+          canvas.drawText(patientName, PAGE_WIDTH - 110f, tableRowY + 11.5f, rowPaint)
+
+          // Work Type & Lab
+          val workLab = "${ship.workTypeName} (${ship.labName})".take(24)
+          canvas.drawText(workLab, PAGE_WIDTH - 230f, tableRowY + 11.5f, rowPaint)
+
+          // Pieces
+          canvas.drawText("${ship.pieceCount}", PAGE_WIDTH - 365f, tableRowY + 11.5f, rowPaint)
+
+          // Expected Delivery Date
+          val dueDateStr = DateUtils.formatShortDate(ship.expectedDeliveryDate)
+          canvas.drawText(dueDateStr, PAGE_WIDTH - 400f, tableRowY + 11.5f, rowPaint)
+
+          // Status with colored indicator
+          val statusColor = when (ship.status) {
+            com.aqlanlab.app.data.models.ShipmentStatus.NEW -> "#2563EB"
+            com.aqlanlab.app.data.models.ShipmentStatus.IN_PROGRESS -> "#D97706"
+            com.aqlanlab.app.data.models.ShipmentStatus.READY -> "#16A34A"
+            com.aqlanlab.app.data.models.ShipmentStatus.RECEIVED -> "#059669"
+            com.aqlanlab.app.data.models.ShipmentStatus.CANCELLED -> "#64748B"
+          }
+          val statusPaint = TextPaint().apply {
+            color = Color.parseColor(statusColor)
+            textSize = 7.5f
+            isFakeBoldText = true
+            isAntiAlias = true
+            textAlign = Paint.Align.RIGHT
+          }
+          canvas.drawText(ship.status.titleAr, PAGE_WIDTH - 465f, tableRowY + 11.5f, statusPaint)
+
+          // Price
+          if (userRole != UserRole.STAFF) {
+            canvas.drawText("${ship.totalPrice} $currency", 65f, tableRowY + 11.5f, rowPaint)
+          }
+
+          tableRowY += 16f
+        }
+
+        // On the final page, draw signatures
+        if (pageIndex == totalPages - 1) {
+          drawSignaturesSection(canvas, (PAGE_HEIGHT - 135f))
+        }
+
+        drawFooter(canvas)
+        document.finishPage(page)
+      }
+
+      FileOutputStream(pdfFile).use { out ->
+        document.writeTo(out)
+      }
+      document.close()
+
+      pdfFile
+    } catch (e: Exception) {
+      e.printStackTrace()
+      null
+    }
+  }
+
+  /**
    * Generates a comprehensive periodic / daily summary report in PDF format
    */
   fun generatePeriodicSummaryPdf(

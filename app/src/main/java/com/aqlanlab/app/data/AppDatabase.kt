@@ -53,6 +53,7 @@ abstract class AppDatabase : RoomDatabase() {
           AppDatabase::class.java,
           "dental_lab_database.db"
         )
+        .addCallback(DatabaseCallback(scope))
         .fallbackToDestructiveMigration()
         .build()
         INSTANCE = instance

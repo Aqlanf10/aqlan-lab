@@ -68,6 +68,27 @@ object ClinicInfo {
     }
   }
 
+  fun sendSms(context: Context, phoneNumber: String, message: String = "") {
+    try {
+      val cleanPhone = phoneNumber.replace("-", "").replace(" ", "")
+      val intent = Intent(Intent.ACTION_SENDTO).apply {
+        data = Uri.parse("smsto:$cleanPhone")
+        putExtra("sms_body", message)
+      }
+      context.startActivity(intent)
+    } catch (e: Exception) {
+      try {
+        val backupIntent = Intent(Intent.ACTION_VIEW).apply {
+          data = Uri.parse("sms:$phoneNumber")
+          putExtra("sms_body", message)
+        }
+        context.startActivity(backupIntent)
+      } catch (ex: Exception) {
+        Toast.makeText(context, "تعذر فتح تطبيق الرسائل القصيرة (SMS)", Toast.LENGTH_SHORT).show()
+      }
+    }
+  }
+
   fun formatOfficialHeader(title: String): String {
     return """
       ═══════════════════════════════════════

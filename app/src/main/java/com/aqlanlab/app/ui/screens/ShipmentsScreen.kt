@@ -1,5 +1,6 @@
 package com.aqlanlab.app.ui.screens
 
+import android.widget.Toast
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
@@ -18,15 +19,19 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.aqlanlab.app.data.models.ShipmentStatus
 import com.aqlanlab.app.data.models.UserRole
+import com.aqlanlab.app.network.SyncState
 import com.aqlanlab.app.ui.components.*
 import com.aqlanlab.app.ui.theme.*
 import com.aqlanlab.app.ui.viewmodel.DentalLabViewModel
+import com.aqlanlab.app.util.PdfReportGenerator
+import java.io.File
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -82,6 +87,11 @@ fun ShipmentsScreen(
     }
   }
 
+  val syncState by viewModel.syncState.collectAsState()
+  val isOnline by viewModel.isOnline.collectAsState()
+  var isSyncingLocal by remember { mutableStateOf(false) }
+  val context = LocalContext.current
+
   val overdueCount = remember(allShipments) {
     allShipments.count { DateUtils.isLate(it.expectedDeliveryDate, it.status) }
   }
@@ -89,15 +99,26 @@ fun ShipmentsScreen(
     allShipments.count { it.isUrgent }
   }
 
+  var showPdfExportDialog by remember { mutableStateOf(false) }
+  var generatedPdfFile by remember { mutableStateOf<File?>(null) }
+  var isGeneratingPdf by remember { mutableStateOf(false) }
+
   Scaffold(
     topBar = {
       TopAppBar(
         title = {
-          Text(
-            text = "إدارة الإرساليات والأعمال",
-            style = MaterialTheme.typography.titleLarge,
-            fontWeight = FontWeight.Bold
-          )
+          Column {
+            Text(
+              text = "إدارة الإرساليات والأعمال",
+              style = MaterialTheme.typography.titleMedium,
+              fontWeight = FontWeight.Bold
+            )
+            Text(
+              text = if (isOnline) "🟢 متصل بالسحابة (Firestore)" else "🔴 وضع الحفظ المحلي (Room)",
+              fontSize = 11.sp,
+              color = if (isOnline) Color(0xFF15803D) else MaterialTheme.colorScheme.error
+            )
+          }
         },
         navigationIcon = {
           IconButton(onClick = onBack) {
@@ -105,6 +126,82 @@ fun ShipmentsScreen(
           }
         },
         actions = {
+          // Export Current List to PDF Report Button
+          IconButton(
+            onClick = {
+              if (finalDisplayShipments.isEmpty()) {
+                Toast.makeText(context, "لا توجد إرساليات للتصدير", Toast.LENGTH_SHORT).show()
+              } else {
+                isGeneratingPdf = true
+                val filterDesc = when {
+                  onlyOverdue -> "الإرساليات المتأخرة"
+                  onlyUrgent -> "الإرساليات العاجلة"
+                  selectedStatusFilter != null -> "إرساليات حالة: ${selectedStatusFilter?.titleAr}"
+                  searchQuery.isNotBlank() -> "نتائج البحث: $searchQuery"
+                  else -> "كافة الإرساليات النشطة"
+                }
+                val pdf = PdfReportGenerator.generateShipmentsListPdf(
+                  context = context,
+                  title = "تقرير كشف إرساليات معمل الأسنان",
+                  subtitle = "الفلترة: $filterDesc (${finalDisplayShipments.size} إرسالية)",
+                  shipments = finalDisplayShipments,
+                  currency = currency,
+                  userRole = activeUser.role
+                )
+                isGeneratingPdf = false
+                if (pdf != null && pdf.exists()) {
+                  generatedPdfFile = pdf
+                  showPdfExportDialog = true
+                } else {
+                  Toast.makeText(context, "فشل إنشاء تقرير PDF", Toast.LENGTH_SHORT).show()
+                }
+              }
+            },
+            enabled = !isGeneratingPdf,
+            modifier = Modifier.testTag("export_shipments_pdf_btn")
+          ) {
+            if (isGeneratingPdf) {
+              CircularProgressIndicator(
+                modifier = Modifier.size(20.dp),
+                strokeWidth = 2.dp,
+                color = MaterialTheme.colorScheme.primary
+              )
+            } else {
+              Icon(
+                Icons.Default.PictureAsPdf,
+                contentDescription = "تصدير كشف الإرساليات إلى PDF للطباعة والمشاركة",
+                tint = MaterialTheme.colorScheme.primary
+              )
+            }
+          }
+
+          // Manual 'Sync to Cloud' Button (Room to Firebase Firestore)
+          IconButton(
+            onClick = {
+              isSyncingLocal = true
+              viewModel.syncShipmentsToFirestore { success, msg ->
+                isSyncingLocal = false
+                Toast.makeText(context, msg, if (success) Toast.LENGTH_LONG else Toast.LENGTH_SHORT).show()
+              }
+            },
+            enabled = syncState != SyncState.SYNCING && !isSyncingLocal,
+            modifier = Modifier.testTag("sync_to_cloud_button")
+          ) {
+            if (syncState == SyncState.SYNCING || isSyncingLocal) {
+              CircularProgressIndicator(
+                modifier = Modifier.size(20.dp),
+                strokeWidth = 2.dp,
+                color = MaterialTheme.colorScheme.primary
+              )
+            } else {
+              Icon(
+                Icons.Default.CloudUpload,
+                contentDescription = "مزامنة ونسخ احتياطي للإرساليات إلى السحابة",
+                tint = MaterialTheme.colorScheme.primary
+              )
+            }
+          }
+
           IconButton(
             onClick = onNavigateToQrScanner,
             modifier = Modifier.testTag("scan_qr_btn")
@@ -325,6 +422,79 @@ fun ShipmentsScreen(
         }
       }
 
+      // Quick PDF Export Header Bar
+      if (finalDisplayShipments.isNotEmpty()) {
+        Card(
+          shape = RoundedCornerShape(10.dp),
+          colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.4f)
+          ),
+          modifier = Modifier
+            .fillMaxWidth()
+            .testTag("shipments_export_quick_bar")
+        ) {
+          Row(
+            modifier = Modifier
+              .fillMaxWidth()
+              .padding(horizontal = 12.dp, vertical = 8.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+          ) {
+            Row(
+              verticalAlignment = Alignment.CenterVertically,
+              horizontalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+              Icon(
+                Icons.Default.PictureAsPdf,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.size(18.dp)
+              )
+              Text(
+                text = "تقرير الكشف (${finalDisplayShipments.size} إرسالية)",
+                style = MaterialTheme.typography.labelMedium,
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.onPrimaryContainer
+              )
+            }
+
+            TextButton(
+              onClick = {
+                isGeneratingPdf = true
+                val filterDesc = when {
+                  onlyOverdue -> "الإرساليات المتأخرة"
+                  onlyUrgent -> "الإرساليات العاجلة"
+                  selectedStatusFilter != null -> "إرساليات حالة: ${selectedStatusFilter?.titleAr}"
+                  searchQuery.isNotBlank() -> "نتائج البحث: $searchQuery"
+                  else -> "كافة الإرساليات النشطة"
+                }
+                val pdf = PdfReportGenerator.generateShipmentsListPdf(
+                  context = context,
+                  title = "تقرير كشف إرساليات معمل الأسنان",
+                  subtitle = "الفلترة: $filterDesc (${finalDisplayShipments.size} إرسالية)",
+                  shipments = finalDisplayShipments,
+                  currency = currency,
+                  userRole = activeUser.role
+                )
+                isGeneratingPdf = false
+                if (pdf != null && pdf.exists()) {
+                  generatedPdfFile = pdf
+                  showPdfExportDialog = true
+                } else {
+                  Toast.makeText(context, "فشل إنشاء تقرير PDF", Toast.LENGTH_SHORT).show()
+                }
+              },
+              contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+              modifier = Modifier.testTag("quick_export_pdf_btn")
+            ) {
+              Icon(Icons.Default.FileDownload, contentDescription = null, modifier = Modifier.size(16.dp))
+              Spacer(Modifier.width(4.dp))
+              Text("تصدير وطباعة PDF", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+            }
+          }
+        }
+      }
+
       // Shipments List
       if (finalDisplayShipments.isEmpty()) {
         EmptyStateView(
@@ -358,5 +528,103 @@ fun ShipmentsScreen(
         }
       }
     }
+  }
+
+  // PDF Preview & Share / Print Dialog
+  if (showPdfExportDialog && generatedPdfFile != null) {
+    AlertDialog(
+      onDismissRequest = { showPdfExportDialog = false },
+      icon = {
+        Icon(
+          Icons.Default.PictureAsPdf,
+          contentDescription = null,
+          tint = MaterialTheme.colorScheme.primary,
+          modifier = Modifier.size(36.dp)
+        )
+      },
+      title = {
+        Text(
+          text = "تم إنشاء كشف الإرساليات PDF بنجاح",
+          style = MaterialTheme.typography.titleMedium,
+          fontWeight = FontWeight.Bold,
+          textAlign = androidx.compose.ui.text.style.TextAlign.Center
+        )
+      },
+      text = {
+        Column(
+          modifier = Modifier.fillMaxWidth(),
+          verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+          Text(
+            text = "تم تجهيز ملف التقرير متضمناً اسم المريض، نوع التركيبة، المعمل، تاريخ الاستحقاق، والحالة لعدد (${finalDisplayShipments.size}) إرسالية.",
+            style = MaterialTheme.typography.bodyMedium
+          )
+          Surface(
+            shape = RoundedCornerShape(8.dp),
+            color = MaterialTheme.colorScheme.surfaceVariant,
+            modifier = Modifier.fillMaxWidth()
+          ) {
+            Column(modifier = Modifier.padding(10.dp)) {
+              Text(
+                text = "📄 الملف: ${generatedPdfFile?.name}",
+                style = MaterialTheme.typography.labelMedium,
+                fontWeight = FontWeight.Bold
+              )
+              Text(
+                text = "📊 إجمالي القطع: ${finalDisplayShipments.sumOf { it.pieceCount }} قطعة",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+              )
+            }
+          }
+        }
+      },
+      confirmButton = {
+        Button(
+          onClick = {
+            generatedPdfFile?.let { file ->
+              PdfReportGenerator.openPdfFile(context, file)
+            }
+            showPdfExportDialog = false
+          },
+          modifier = Modifier.testTag("open_pdf_dialog_btn")
+        ) {
+          Icon(Icons.Default.Visibility, contentDescription = null, modifier = Modifier.size(18.dp))
+          Spacer(Modifier.width(6.dp))
+          Text("فتح وعرض")
+        }
+      },
+      dismissButton = {
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+          OutlinedButton(
+            onClick = {
+              generatedPdfFile?.let { file ->
+                PdfReportGenerator.printPdf(context, file, jobName = "Shipments_Report")
+              }
+              showPdfExportDialog = false
+            },
+            modifier = Modifier.testTag("print_pdf_dialog_btn")
+          ) {
+            Icon(Icons.Default.Print, contentDescription = null, modifier = Modifier.size(18.dp))
+            Spacer(Modifier.width(4.dp))
+            Text("طباعة")
+          }
+
+          FilledTonalButton(
+            onClick = {
+              generatedPdfFile?.let { file ->
+                PdfReportGenerator.sharePdfFile(context, file, title = "كشف إرساليات المعمل")
+              }
+              showPdfExportDialog = false
+            },
+            modifier = Modifier.testTag("share_pdf_dialog_btn")
+          ) {
+            Icon(Icons.Default.Share, contentDescription = null, modifier = Modifier.size(18.dp))
+            Spacer(Modifier.width(4.dp))
+            Text("مشاركة")
+          }
+        }
+      }
+    )
   }
 }
