@@ -117,10 +117,19 @@ fun NewEditShipmentScreen(
     }
   }
 
-  // Delivery Date (defaults to +4 days)
+  // Delivery Date: defaults to +4 days for NEW shipments; when EDITING an existing
+  // shipment the ORIGINAL date is preserved unless the user explicitly picks a chip.
+  // FIX: previously the offset always initialized to 4 and the computed date silently
+  // overwrote the stored expectedDeliveryDate on save, flipping late-status and
+  // misleading delivery notifications.
   var deliveryDaysOffset by remember { mutableIntStateOf(4) }
-  val expectedDeliveryDate = remember(deliveryDaysOffset) {
-    System.currentTimeMillis() + (deliveryDaysOffset * 24 * 60 * 60 * 1000L)
+  var deliveryDateChanged by remember(existingShipment) { mutableStateOf(false) }
+  val expectedDeliveryDate = remember(deliveryDaysOffset, existingShipment, deliveryDateChanged) {
+    if (existingShipment != null && !deliveryDateChanged) {
+      existingShipment.expectedDeliveryDate
+    } else {
+      System.currentTimeMillis() + (deliveryDaysOffset * 24 * 60 * 60 * 1000L)
+    }
   }
 
   // Dropdown expansion states
@@ -803,8 +812,11 @@ fun NewEditShipmentScreen(
           ) {
             listOf(1 to "غداً (عاجل)", 2 to "خلال يومين", 3 to "3 أيام", 5 to "5 أيام", 7 to "أسبوع").forEach { (days, label) ->
               FilterChip(
-                selected = deliveryDaysOffset == days,
-                onClick = { deliveryDaysOffset = days },
+                selected = deliveryDateChanged && deliveryDaysOffset == days,
+                onClick = {
+                  deliveryDaysOffset = days
+                  deliveryDateChanged = true
+                },
                 label = { Text(label, fontSize = 11.sp) }
               )
             }

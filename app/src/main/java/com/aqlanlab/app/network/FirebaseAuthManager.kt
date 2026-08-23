@@ -251,8 +251,11 @@ class FirebaseAuthManager(
       Result.failure(e)
     } catch (e: Exception) {
       Log.e(TAG, "Google Sign-In error", e)
+      // FIX: the old check `e.message?.contains("16")` matched ANY error containing the
+      // substring "16" (dates, status codes, IDs) and produced a wrong Play-Services
+      // message. Now only explicit Play-Services markers are matched.
       val message = if (e.message?.contains("Play Services", ignoreCase = true) == true ||
-        e.message?.contains("16", ignoreCase = true) == true) {
+        e.message?.contains("PLAY_SERVICES", ignoreCase = true) == true) {
         "خدمات Google Play غير مهيأة للمصادقة التلقائية على هذا الجهاز. يمكنك تسجيل الدخول باستخدام البريد وكلمة المرور أو رمز الطبيب."
       } else {
         mapFirebaseError(e)
@@ -387,8 +390,14 @@ class FirebaseAuthManager(
     createdBy: String = "SUPER_ADMIN"
   ): Result<User> = withContext(Dispatchers.IO) {
     if (FirebaseApp.getApps(context).isEmpty()) {
-      // Local fallback with warning
-      return@withContext Result.success(newUser)
+      // FIX: previously returned Result.success(newUser) ("Local fallback with warning"),
+      // creating a user that exists locally but can NEVER sign in to Firebase Auth —
+      // a fake success contradicting the documented contract "Never returns fake success".
+      return@withContext Result.failure(
+        AppCloudError.NetworkUnavailable(
+          userFriendlyMessageAr = "خدمات Firebase غير مهيأة على هذا الجهاز. لا يمكن إنشاء حساب سحابي حقيقي."
+        )
+      )
     }
 
     // Call Cloud Function to provision real Auth user & claims
@@ -701,7 +710,7 @@ class FirebaseAuthManager(
       msg.contains("email-already-in-use", ignoreCase = true) ->
         "هذا الحساب مسجل مسبقاً في النظام"
       msg.contains("weak-password", ignoreCase = true) ->
-        "كلمة المرور ضعيفة (يجب أن تتكون من 6 أحرف/أرقام على الأقل)"
+        "كلمة المرور ضعيفة (يجب أن تتكون من 10 أحرف/أرقام على الأقل)"
       msg.contains("invalid-email", ignoreCase = true) ->
         "صيغة البريد الإلكتروني غير صحيحة"
       msg.contains("network", ignoreCase = true) ->

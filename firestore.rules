@@ -53,7 +53,18 @@ service cloud.firestore {
       allow read, write: if false;
     }
 
-    // App Versioning & Remote Configuration (Readable by all clients before/after login)
+    // ─── Global live-tracking index (operational data only, NO financial fields) ───
+    // FIX: the app writes `all_shipments/{clinicId}_{shipmentId}` on every shipment save.
+    // Previously no rule existed for this path, so every single-shipment upload failed
+    // with permission-denied even though the clinic copy had succeeded.
+    match /all_shipments/{docId} {
+      allow read: if isAuthenticated();
+      allow create, update: if isAuthenticated();
+      allow delete: if isSuperAdmin();
+    }
+
+    // App Versioning & Remote Configuration (Readable by all clients before/after login —
+    // required by the mandatory-update gate that runs BEFORE authentication)
     match /app_config/{configId} {
       allow read: if true;
       allow write: if isSuperAdmin();
@@ -62,10 +73,12 @@ service cloud.firestore {
     // Clinic-partitioned collection access
     match /clinics/{clinicId} {
       // Super Admin has full control over the clinic document
-      allow read, write: if isSuperAdmin();
-
-      // Authorized users and staff can read clinic metadata
-      allow read: if isApprovedStaff(clinicId);
+      allow read: if isSuperAdmin() || isApprovedStaff(clinicId);
+      allow write: if isSuperAdmin();
+      // FIX: the app's sync writes clinic metadata (counts + last-sync info, no financial
+      // fields) with SetOptions.merge() as an UPDATE for financial roles — previously
+      // this write was Super-Admin-only and made the whole sync fail for everyone else.
+      allow update: if hasFinancialAccess(clinicId);
 
       // 1. Operational Shipments / Orders (NO FINANCIAL FIELDS)
       // Accessible to operational staff (Technicians, Staff, Reception)
@@ -106,6 +119,8 @@ service cloud.firestore {
       }
 
       // 5. Laboratories Directory & Basic Info
+      // FIX: the app syncs labs to the `labs` subcollection — the rules previously only
+      // declared `laboratories`, so the lab batch of every sync failed for ALL roles.
       match /laboratories/{labId} {
         allow read: if isApprovedStaff(clinicId);
         allow create, update: if isApprovedStaff(clinicId);
@@ -115,6 +130,12 @@ service cloud.firestore {
         match /price_agreements/{priceId} {
           allow read, write: if hasFinancialAccess(clinicId);
         }
+      }
+
+      match /labs/{labId} {
+        allow read: if isApprovedStaff(clinicId);
+        allow create, update: if isApprovedStaff(clinicId);
+        allow delete: if isSuperAdmin();
       }
 
       // 6. Inventory Items & Stock Counts
@@ -131,9 +152,18 @@ service cloud.firestore {
       }
 
       // 8. Device Bindings & Hardware Security
+      // FIX: staff devices must be able to READ their own approval status (the
+      // pending-approval screen listens on this document). Previously read was
+      // Super-Admin-only, so the staff approval flow could submit but never observe
+      // its result. Updates by non-admins may not change `status`/`userId`.
       match /devices/{deviceId} {
         allow create: if isAuthenticated();
-        allow read, update, delete: if isSuperAdmin();
+        allow read: if isAuthenticated();
+        allow update: if isSuperAdmin() ||
+          (isAuthenticated() &&
+           request.resource.data.status == resource.data.status &&
+           request.resource.data.userId == resource.data.userId);
+        allow delete: if isSuperAdmin();
       }
 
       // 9. Authorized Users list (Keyed by Firebase UID)
@@ -152,7 +182,15 @@ service cloud.firestore {
       }
 
       match /backup_payloads/{snapshotId} {
-        allow read, write: if isSuperAdmin();
+        allow read, write: if isSuperAdmin() || hasFinancialAccess(clinicId);
+      }
+
+      // 11. Firebase Storage backup metadata index
+      // FIX: the app writes `clinics/{id}/storage_backups/{backupId}` after each Storage
+      // backup — no rule existed for this path, so the backup history list was always
+      // empty and metadata writes failed silently.
+      match /storage_backups/{backupId} {
+        allow read, write: if hasFinancialAccess(clinicId);
       }
     }
   }

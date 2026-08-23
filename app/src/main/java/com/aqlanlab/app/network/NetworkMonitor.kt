@@ -29,7 +29,10 @@ class NetworkMonitor(context: Context) {
       }
 
       override fun onLost(network: Network) {
-        trySend(false)
+        // FIX: `onLost` fires for a single network even when another one is still up
+        // (e.g. WiFi -> cellular handover). Re-query the ACTUAL state instead of
+        // blindly reporting offline.
+        trySend(isCurrentlyConnected())
       }
 
       override fun onCapabilitiesChanged(
@@ -70,7 +73,10 @@ class NetworkMonitor(context: Context) {
       val capabilities = cm.getNetworkCapabilities(activeNetwork) ?: return false
       capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
     } catch (e: Exception) {
-      true
+      // FIX: previously any exception returned `true` (fail-open). An unreachable
+      // ConnectivityManager is now reported as offline so the UI doesn't attempt
+      // cloud operations that are guaranteed to fail.
+      false
     }
   }
 }

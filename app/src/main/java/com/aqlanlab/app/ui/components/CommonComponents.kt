@@ -361,15 +361,22 @@ fun EmptyStateView(
 }
 
 object DateUtils {
-  private val dateTimeFormat = SimpleDateFormat("yyyy/MM/dd hh:mm a", Locale.getDefault())
-  private val shortDateFormat = SimpleDateFormat("yyyy/MM/dd", Locale.getDefault())
+  // FIX: SimpleDateFormat is NOT thread-safe, but these singletons were shared across
+  // the main thread and IO coroutines (notifications, PDF generation), causing garbled
+  // dates or rare ArrayIndexOutOfBoundsException. Formatters are now per-thread.
+  private val dateTimeFormat: ThreadLocal<SimpleDateFormat> = object : ThreadLocal<SimpleDateFormat>() {
+    override fun initialValue() = SimpleDateFormat("yyyy/MM/dd hh:mm a", Locale.getDefault())
+  }
+  private val shortDateFormat: ThreadLocal<SimpleDateFormat> = object : ThreadLocal<SimpleDateFormat>() {
+    override fun initialValue() = SimpleDateFormat("yyyy/MM/dd", Locale.getDefault())
+  }
 
   fun formatDateTime(timestamp: Long): String {
-    return dateTimeFormat.format(Date(timestamp))
+    return dateTimeFormat.get()!!.format(Date(timestamp))
   }
 
   fun formatShortDate(timestamp: Long): String {
-    return shortDateFormat.format(Date(timestamp))
+    return shortDateFormat.get()!!.format(Date(timestamp))
   }
 
   fun isLate(expectedDeliveryTimestamp: Long, status: ShipmentStatus): Boolean {

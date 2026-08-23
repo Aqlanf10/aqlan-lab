@@ -25,8 +25,18 @@ const MASTER_DOCTOR_EMAIL = "aqlanf10@gmail.com";
 
 /**
  * Validates that the function caller has SUPER_ADMIN authorization.
+ * Also enforces Firebase App Check (defense-in-depth: requests without a valid
+ * App Check attestation are rejected even before console-level enforcement).
  */
 function assertSuperAdmin(context) {
+  // HARDENING: reject calls that do not carry an App Check token
+  if (context.app == null) {
+    throw new functions.https.HttpsError(
+      "failed-precondition",
+      "The function must be called from an attested app."
+    );
+  }
+
   if (!context.auth) {
     throw new functions.https.HttpsError(
       "unauthenticated",
@@ -36,7 +46,7 @@ function assertSuperAdmin(context) {
 
   const token = context.auth.token;
   const isSuperAdminClaim = token.role === "SUPER_ADMIN";
-  const isMasterEmail = token.email && token.email.toLowerCase() === MASTER_DOCTOR_EMAIL;
+  const isMasterEmail = !!(token.email && token.email.toLowerCase() === MASTER_DOCTOR_EMAIL);
 
   if (!isSuperAdminClaim && !isMasterEmail) {
     throw new functions.https.HttpsError(
@@ -44,6 +54,15 @@ function assertSuperAdmin(context) {
       "غير مصرح لك بتنفيذ هذه العملية. هذه الصلاحية مخصصة للمشرف العام فقط."
     );
   }
+}
+
+/**
+ * Wraps internal error details: logs the real error server-side and returns a
+ * generic Arabic message to the client (previously raw `error.message` was leaked).
+ */
+function internalError(actionAr, error) {
+  console.error(`${actionAr} failed:`, error);
+  return new functions.https.HttpsError("internal", actionAr);
 }
 
 /**
@@ -69,8 +88,9 @@ exports.createAuthorizedUser = functions.https.onCall(async (data, context) => {
   if (!email || !email.includes("@")) {
     throw new functions.https.HttpsError("invalid-argument", "البريد الإلكتروني المدخل غير صالح.");
   }
-  if (!temporaryPassword || temporaryPassword.length < 6) {
-    throw new functions.https.HttpsError("invalid-argument", "كلمة المرور المؤقتة يجب أن لا تقل عن 6 خانات.");
+  // HARDENING: minimum password length raised from 6 to 10 characters
+  if (!temporaryPassword || temporaryPassword.length < 10) {
+    throw new functions.https.HttpsError("invalid-argument", "كلمة المرور المؤقتة يجب أن لا تقل عن 10 خانات.");
   }
   if (!username || username.trim().length < 3) {
     throw new functions.https.HttpsError("invalid-argument", "اسم المستخدم يجب أن لا يقل عن 3 أحرف.");
@@ -178,7 +198,7 @@ exports.createAuthorizedUser = functions.https.onCall(async (data, context) => {
     if (error instanceof functions.https.HttpsError) {
       throw error;
     }
-    throw new functions.https.HttpsError("internal", error.message || "حدث خطأ أثناء إنشاء المستخدم.");
+    throw internalError("حدث خطأ أثناء إنشاء المستخدم.", error);
   }
 });
 
@@ -241,8 +261,7 @@ exports.setUserActiveStatus = functions.https.onCall(async (data, context) => {
       message: isActive ? "تم تفعيل الحساب بنجاح." : "تم تعطيل الحساب وإنهاء جميع جلساته النشطة."
     };
   } catch (error) {
-    console.error("Error setting user active status:", error);
-    throw new functions.https.HttpsError("internal", error.message || "فشل تحديث حالة الحساب.");
+    throw internalError("فشل تحديث حالة الحساب.", error);
   }
 });
 
@@ -254,8 +273,9 @@ exports.resetUserPassword = functions.https.onCall(async (data, context) => {
   assertSuperAdmin(context);
 
   const { targetUid, newPassword, clinicId = DEFAULT_CLINIC_ID } = data;
-  if (!targetUid || !newPassword || newPassword.length < 6) {
-    throw new functions.https.HttpsError("invalid-argument", "كلمة المرور الجديدة يجب أن لا تقل عن 6 خانات.");
+  // HARDENING: minimum password length raised from 6 to 10 characters
+  if (!targetUid || !newPassword || newPassword.length < 10) {
+    throw new functions.https.HttpsError("invalid-argument", "كلمة المرور الجديدة يجب أن لا تقل عن 10 خانات.");
   }
 
   const callerEmail = context.auth.token.email || "SUPER_ADMIN";
@@ -284,8 +304,7 @@ exports.resetUserPassword = functions.https.onCall(async (data, context) => {
       message: "تم إعادة تعيين كلمة المرور بنجاح."
     };
   } catch (error) {
-    console.error("Error resetting password:", error);
-    throw new functions.https.HttpsError("internal", error.message || "فشل إعادة تعيين كلمة المرور.");
+    throw internalError("فشل إعادة تعيين كلمة المرور.", error);
   }
 });
 
@@ -353,8 +372,7 @@ exports.updateUserRoleAndPermissions = functions.https.onCall(async (data, conte
       message: "تم تحديث الدور والصلاحيات بنجاح."
     };
   } catch (error) {
-    console.error("Error updating user role:", error);
-    throw new functions.https.HttpsError("internal", error.message || "فشل تحديث الصلاحيات.");
+    throw internalError("فشل تحديث الصلاحيات.", error);
   }
 });
 
@@ -392,21 +410,29 @@ exports.revokeUserSessions = functions.https.onCall(async (data, context) => {
       message: "تم إنهاء كافة الجلسات النشطة للمستخدم بنجاح."
     };
   } catch (error) {
-    console.error("Error revoking user sessions:", error);
-    throw new functions.https.HttpsError("internal", error.message || "فشل إنهاء الجلسات.");
+    throw internalError("فشل إنهاء الجلسات.", error);
   }
 });
 
 /**
  * Validates that caller has financial privileges (SUPER_ADMIN, ADMIN, ACCOUNTANT).
  * STAFF and TECHNICIAN callers are strictly rejected server-side.
+ * Also enforces Firebase App Check (defense-in-depth).
  */
 function assertFinancialAccess(context) {
+  // HARDENING: reject calls that do not carry an App Check token
+  if (context.app == null) {
+    throw new functions.https.HttpsError(
+      "failed-precondition",
+      "The function must be called from an attested app."
+    );
+  }
+
   if (!context.auth) {
     throw new functions.https.HttpsError("unauthenticated", "يجب تسجيل الدخول للوصول إلى البيانات المالية.");
   }
   const token = context.auth.token;
-  const isMasterEmail = token.email && token.email.toLowerCase() === MASTER_DOCTOR_EMAIL;
+  const isMasterEmail = !!(token.email && token.email.toLowerCase() === MASTER_DOCTOR_EMAIL);
   const isFinancialRole = token.role === "SUPER_ADMIN" || token.role === "ADMIN" || token.role === "ACCOUNTANT";
   const hasPerm = Array.isArray(token.permissions) && (token.permissions.includes("read:financials") || token.permissions.includes("write:financials"));
 
@@ -448,8 +474,7 @@ exports.getShipmentFinancials = functions.https.onCall(async (data, context) => 
       financialData: docSnap.data()
     };
   } catch (error) {
-    console.error("Error fetching shipment financials:", error);
-    throw new functions.https.HttpsError("internal", error.message || "فشل جلب البيانات المالية.");
+    throw internalError("فشل جلب البيانات المالية.", error);
   }
 });
 
@@ -502,8 +527,7 @@ exports.saveShipmentFinancials = functions.https.onCall(async (data, context) =>
       message: "تم حفظ البيانات المالية للإرسالية بنجاح."
     };
   } catch (error) {
-    console.error("Error saving shipment financials:", error);
-    throw new functions.https.HttpsError("internal", error.message || "فشل حفظ البيانات المالية.");
+    throw internalError("فشل حفظ البيانات المالية.", error);
   }
 });
 
@@ -524,8 +548,7 @@ exports.getAppVersionConfig = functions.https.onCall(async (data, context) => {
     }
     return docSnap.data();
   } catch (error) {
-    console.error("Error getting version config:", error);
-    throw new functions.https.HttpsError("internal", error.message || "فشل قراءة إعدادات الإصدار.");
+    throw internalError("فشل قراءة إعدادات الإصدار.", error);
   }
 });
 
@@ -546,6 +569,30 @@ exports.setMinimumSupportedVersion = functions.https.onCall(async (data, context
     updateUrl = "https://play.google.com/store/apps/details?id=com.aqlanlab.app"
   } = data;
 
+  // HARDENING: the update URL must be an HTTPS link to an allow-listed distribution
+  // host. Previously ANY string was accepted, so a compromised admin session could
+  // repoint the mandatory-update button at an arbitrary APK dropper.
+  const allowedUrlHosts = [
+    "play.google.com",
+    "github.com",
+    "dentallab-online.app"
+  ];
+  let safeUpdateUrl = "https://play.google.com/store/apps/details?id=com.aqlanlab.app";
+  try {
+    const parsed = new URL(String(updateUrl));
+    if (parsed.protocol === "https:" && (allowedUrlHosts.includes(parsed.hostname) || parsed.hostname.endsWith(".github.io"))) {
+      safeUpdateUrl = parsed.toString();
+    } else {
+      throw new functions.https.HttpsError(
+        "invalid-argument",
+        "رابط التحديث يجب أن يكون HTTPS ومن نطاق موثوق (Play Store / GitHub)."
+      );
+    }
+  } catch (e) {
+    if (e instanceof functions.https.HttpsError) throw e;
+    throw new functions.https.HttpsError("invalid-argument", "رابط التحديث غير صالح.");
+  }
+
   try {
     const configData = {
       minimumSupportedVersionCode: Number(minimumSupportedVersionCode),
@@ -554,7 +601,7 @@ exports.setMinimumSupportedVersion = functions.https.onCall(async (data, context
       updateTitleAr: String(updateTitleAr),
       updateMessageAr: String(updateMessageAr),
       releaseNotesAr: String(releaseNotesAr),
-      updateUrl: String(updateUrl),
+      updateUrl: safeUpdateUrl,
       updatedAt: admin.firestore.FieldValue.serverTimestamp(),
       updatedBy: context.auth.token.email || "SUPER_ADMIN"
     };
@@ -566,8 +613,7 @@ exports.setMinimumSupportedVersion = functions.https.onCall(async (data, context
       message: `تم تعيين الحد الأدنى للإصدار المدعوم إلى ${minimumSupportedVersionCode} بنجاح.`
     };
   } catch (error) {
-    console.error("Error setting minimum version:", error);
-    throw new functions.https.HttpsError("internal", error.message || "فشل تحديث الحد الأدنى للإصدار.");
+    throw internalError("فشل تحديث الحد الأدنى للإصدار.", error);
   }
 });
 

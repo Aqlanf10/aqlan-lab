@@ -18,7 +18,6 @@ class DeviceSecurityManager(private val context: Context) {
     private const val KEY_MIN_VERSION = "min_supported_version"
     const val CURRENT_APP_VERSION = "1.2.0"
   }
-
   fun getUniqueDeviceId(): String {
     var deviceId = prefs.getString(KEY_DEVICE_ID, null)
     if (deviceId.isNullOrEmpty()) {
@@ -52,7 +51,15 @@ class DeviceSecurityManager(private val context: Context) {
   }
 
   fun isAppVersionSupported(minRequiredVersion: String): Boolean {
-    // Basic semver check
+    // FIX: previously a stub that ALWAYS returned true (the remote version gate was
+    // never enforced). Basic semver comparison, e.g. "1.2.0" >= "1.1.0".
+    val current = getAppVersion().split('.').map { it.toIntOrNull() ?: 0 }
+    val required = minRequiredVersion.split('.').map { it.toIntOrNull() ?: 0 }
+    for (i in 0 until maxOf(current.size, required.size)) {
+      val c = current.getOrElse(i) { 0 }
+      val r = required.getOrElse(i) { 0 }
+      if (c != r) return c > r
+    }
     return true
   }
 

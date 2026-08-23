@@ -128,8 +128,11 @@ class UserSessionRepository(
         matchedUser
       } else if (firebaseUser != null) {
         val defaultRole = if (isMasterDoctor) UserRole.SUPER_ADMIN else UserRole.STAFF
+        // FIX: id = 0 lets Room auto-generate a unique PK. The old
+        // `System.currentTimeMillis() % 100000` could collide with existing rows and
+        // silently overwrite them (insert uses OnConflictStrategy.REPLACE).
         val synthesized = User(
-          id = if (isMasterDoctor) 1L else (System.currentTimeMillis() % 100000),
+          id = if (isMasterDoctor) 1L else 0L,
           uid = firebaseUser.uid,
           username = (cloudAuthorizedDoc?.get("username") as? String) ?: email.substringBefore("@").ifEmpty { "user" },
           fullName = (cloudAuthorizedDoc?.get("fullName") as? String) ?: if (isMasterDoctor) ClinicInfo.DOCTOR_NAME else (firebaseUser.displayName ?: "موظف المركز"),
@@ -209,11 +212,13 @@ class UserSessionRepository(
 
       // 5. Verify Device Binding & Authorization
       val deviceId = deviceSecurityManager.getUniqueDeviceId()
-      var cloudDevice = firebaseAuthManager.fetchDeviceFromFirestore(deviceId)
+      val cloudDevice = firebaseAuthManager.fetchDeviceFromFirestore(deviceId)
       var localDevice = deviceBindingDao.getDeviceById(deviceId)
 
       if (cloudDevice != null) {
-        deviceBindingDao.insert(cloudDevice)
+        // FIX: real upsert by deviceId (previously inserted a duplicate row per sync)
+        val existing = deviceBindingDao.getDeviceById(cloudDevice.deviceId)
+        deviceBindingDao.insert(cloudDevice.copy(id = existing?.id ?: 0L))
         localDevice = cloudDevice
       }
 
@@ -246,7 +251,7 @@ class UserSessionRepository(
               userName = finalUser.fullName,
               lastActiveAt = System.currentTimeMillis()
             )
-            deviceBindingDao.insert(updated)
+            deviceBindingDao.insert(updated.copy(id = deviceBinding.id))
           }
         }
       }
@@ -293,13 +298,17 @@ class UserSessionRepository(
 
   /**
    * Signs in using local username/PIN.
+   * SECURITY FIX: the username (or email) must MATCH an existing account. Previously the
+   * fallback `?: users.find { verifyPin(pin, it.pinCode) }` allowed signing in as ANY
+   * user by PIN alone — regardless of what was typed in the username field — which
+   * bypassed account deactivation/revocation for anyone knowing a valid PIN.
    */
   suspend fun signInWithLocalPin(usernameOrPin: String, pin: String): Result<UserSessionState> = withContext(Dispatchers.IO) {
     _sessionState.value = UserSessionState.Loading
     val users = userDao.getAllSync()
     val matched = users.find {
       (it.username.equals(usernameOrPin, ignoreCase = true) || it.email.equals(usernameOrPin, ignoreCase = true))
-    } ?: users.find { SecurityUtils.verifyPin(pin, it.pinCode) }
+    }
 
     if (matched != null && SecurityUtils.verifyPin(pin, matched.pinCode)) {
       val session = loadUserProfileAndRole(null, matched)

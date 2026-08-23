@@ -111,6 +111,22 @@ fun MainAppScaffold(
   val navBackStackEntry by navController.currentBackStackEntryAsState()
   val currentRoute = navBackStackEntry?.destination?.route
 
+  // FIX: consume deep-link routes queued from notification taps (MainActivity reads the
+  // NAV_ROUTE extra and forwards it here). Previously notification taps always opened
+  // the Dashboard because the extras were never handled.
+  val pendingDeepLinkRoute by viewModel.pendingDeepLinkRoute.collectAsState()
+  LaunchedEffect(pendingDeepLinkRoute, isAuthenticated) {
+    val route = pendingDeepLinkRoute
+    if (!route.isNullOrBlank() && isAuthenticated) {
+      viewModel.consumeDeepLinkRoute()
+      try {
+        navController.navigate(route) { launchSingleTop = true }
+      } catch (e: Exception) {
+        // Invalid or unknown route — ignore safely
+      }
+    }
+  }
+
   val bottomNavItems = remember(currentUser.role) {
     if (currentUser.role != UserRole.STAFF) {
       listOf(

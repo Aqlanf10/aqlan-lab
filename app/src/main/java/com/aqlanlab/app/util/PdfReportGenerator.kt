@@ -33,6 +33,24 @@ object PdfReportGenerator {
 
   private const val PAGE_WIDTH = 595 // Standard A4 width in points (72 DPI)
   private const val PAGE_HEIGHT = 842 // Standard A4 height in points (72 DPI)
+  private const val REPORTS_MAX_AGE_MS = 24 * 60 * 60 * 1000L // 24 hours
+
+  /**
+   * FIX: exported reports accumulated forever in cacheDir/reports (one new timestamped
+   * file per list export). Deletes report files older than 24 hours on every generation.
+   */
+  private fun cleanOldReports(reportsDir: File) {
+    try {
+      val cutoff = System.currentTimeMillis() - REPORTS_MAX_AGE_MS
+      reportsDir.listFiles()?.forEach { file ->
+        if (file.isFile && file.lastModified() < cutoff) {
+          file.delete()
+        }
+      }
+    } catch (e: Exception) {
+      // best-effort cache cleanup — never block report generation
+    }
+  }
 
   /**
    * Generates a professionally branded PDF file for a dental shipment
@@ -45,6 +63,7 @@ object PdfReportGenerator {
   ): File? {
     return try {
       val reportsDir = File(context.cacheDir, "reports").apply { if (!exists()) mkdirs() }
+      cleanOldReports(reportsDir)
       val cleanShipmentNumber = shipment.shipmentNumber.replace("#", "").replace("/", "-")
       val pdfFile = File(reportsDir, "Shipment_${cleanShipmentNumber}.pdf")
 
@@ -111,6 +130,7 @@ object PdfReportGenerator {
   ): File? {
     return try {
       val reportsDir = File(context.cacheDir, "reports").apply { if (!exists()) mkdirs() }
+      cleanOldReports(reportsDir)
       val timeStamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
       val pdfFile = File(reportsDir, "Shipments_List_${timeStamp}.pdf")
 

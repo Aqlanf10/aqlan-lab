@@ -1,11 +1,10 @@
 package com.aqlanlab.app.data.repository
 
+import androidx.room.withTransaction
 import com.aqlanlab.app.data.AppDatabase
 import com.aqlanlab.app.data.DatabaseSeedData
 import com.aqlanlab.app.data.models.*
 import kotlinx.coroutines.flow.Flow
-import java.text.SimpleDateFormat
-import java.util.Date
 import java.util.Locale
 
 class DentalLabRepository(private val database: AppDatabase) {
@@ -39,8 +38,21 @@ class DentalLabRepository(private val database: AppDatabase) {
   val allInventoryTransactions: Flow<List<InventoryTransaction>> = inventoryDao.getAllTransactions()
 
   suspend fun checkAndSeedInitialData() {
+    // SECURITY/DATA FIX: seeding is now gated by a persistent one-time flag.
+    // Previously the gate was `shipmentCount == 0` and ran on every launch, so after
+    // "wipe transactions" or a factory reset the demo data (including users with
+    // empty PINs) was silently re-imported on the next restart — resurrecting deleted
+    // records and enabling the blank-PIN takeover chain.
+    if (settingDao.getSetting("seed_completed") == "true") return
+
     val count = shipmentDao.getShipmentCount()
-    if (count == 0) {
+    if (count > 0) {
+      // Database already contains data (restore/import): never re-import demo data.
+      settingDao.setSetting(AppSetting("seed_completed", "true"))
+      return
+    }
+
+    database.withTransaction {
       userDao.insertAll(DatabaseSeedData.defaultUsers)
       labDao.insertAll(DatabaseSeedData.defaultLabs)
       workTypeDao.insertAll(DatabaseSeedData.defaultWorkTypes)
@@ -54,35 +66,45 @@ class DentalLabRepository(private val database: AppDatabase) {
       for (setting in DatabaseSeedData.defaultSettings) {
         settingDao.setSetting(setting)
       }
+      settingDao.setSetting(AppSetting("seed_completed", "true"))
     }
   }
 
   suspend fun resetToDefaultDemoData() {
-    shipmentDao.deleteAllShipments()
-    paymentDao.deleteAllPayments()
-    auditLogDao.deleteAllAuditLogs()
-    labPriceDao.deleteAllPrices()
-    labDao.deleteAllLabs()
-    workTypeDao.deleteAllWorkTypes()
-    inventoryDao.deleteAllItems()
-    inventoryDao.deleteAllTransactions()
+    database.withTransaction {
+      shipmentDao.deleteAllShipments()
+      paymentDao.deleteAllPayments()
+      auditLogDao.deleteAllAuditLogs()
+      labPriceDao.deleteAllPrices()
+      labDao.deleteAllLabs()
+      workTypeDao.deleteAllWorkTypes()
+      inventoryDao.deleteAllItems()
+      inventoryDao.deleteAllTransactions()
 
-    userDao.insertAll(DatabaseSeedData.defaultUsers)
-    labDao.insertAll(DatabaseSeedData.defaultLabs)
-    workTypeDao.insertAll(DatabaseSeedData.defaultWorkTypes)
-    labPriceDao.insertAll(DatabaseSeedData.defaultLabPrices)
-    shipmentDao.insertAll(DatabaseSeedData.defaultShipments)
-    paymentDao.insertAll(DatabaseSeedData.defaultPayments)
-    auditLogDao.insertAll(DatabaseSeedData.defaultAuditLogs)
-    inventoryDao.insertAll(DatabaseSeedData.defaultInventoryItems)
-    inventoryDao.insertAllTransactions(DatabaseSeedData.defaultInventoryTransactions)
+      // SECURITY FIX: preserve existing user accounts and their PIN hashes — previously
+      // the default users (with EMPTY pinCodes) were re-inserted with REPLACE strategy,
+      // silently wiping every user's PIN.
+      if (userDao.getAllSync().isEmpty()) {
+        userDao.insertAll(DatabaseSeedData.defaultUsers)
+      }
+      labDao.insertAll(DatabaseSeedData.defaultLabs)
+      workTypeDao.insertAll(DatabaseSeedData.defaultWorkTypes)
+      labPriceDao.insertAll(DatabaseSeedData.defaultLabPrices)
+      shipmentDao.insertAll(DatabaseSeedData.defaultShipments)
+      paymentDao.insertAll(DatabaseSeedData.defaultPayments)
+      auditLogDao.insertAll(DatabaseSeedData.defaultAuditLogs)
+      inventoryDao.insertAll(DatabaseSeedData.defaultInventoryItems)
+      inventoryDao.insertAllTransactions(DatabaseSeedData.defaultInventoryTransactions)
+    }
   }
 
   suspend fun wipeAllTransactionsOnly(currentUser: User) {
-    shipmentDao.deleteAllShipments()
-    paymentDao.deleteAllPayments()
-    auditLogDao.deleteAllAuditLogs()
-    inventoryDao.deleteAllTransactions()
+    database.withTransaction {
+      shipmentDao.deleteAllShipments()
+      paymentDao.deleteAllPayments()
+      auditLogDao.deleteAllAuditLogs()
+      inventoryDao.deleteAllTransactions()
+    }
 
     logAudit(
       user = currentUser,
@@ -93,24 +115,28 @@ class DentalLabRepository(private val database: AppDatabase) {
   }
 
   suspend fun factoryResetAll(currentUser: User) {
-    shipmentDao.deleteAllShipments()
-    paymentDao.deleteAllPayments()
-    auditLogDao.deleteAllAuditLogs()
-    labPriceDao.deleteAllPrices()
-    labDao.deleteAllLabs()
-    workTypeDao.deleteAllWorkTypes()
+    database.withTransaction {
+      shipmentDao.deleteAllShipments()
+      paymentDao.deleteAllPayments()
+      auditLogDao.deleteAllAuditLogs()
+      labPriceDao.deleteAllPrices()
+      labDao.deleteAllLabs()
+      workTypeDao.deleteAllWorkTypes()
 
-    // Ensure default admin user and essential default work types exist
-    val defaultAdmin = User(
-      id = 1,
-      username = "admin",
-      fullName = "المدير العام",
-      role = UserRole.ADMIN,
-      pinCode = "", // No default PIN
-      avatarColor = 0xFF00687A
-    )
-    userDao.insert(defaultAdmin)
-    workTypeDao.insertAll(DatabaseSeedData.defaultWorkTypes)
+      // Ensure default admin user and essential default work types exist
+      val defaultAdmin = User(
+        id = 1,
+        username = "admin",
+        fullName = "المدير العام",
+        role = UserRole.ADMIN,
+        pinCode = "", // No default PIN
+        avatarColor = 0xFF00687A
+      )
+      userDao.insert(defaultAdmin)
+      workTypeDao.insertAll(DatabaseSeedData.defaultWorkTypes)
+      // Keep the one-time seeding flag so demo data is NOT re-imported on next launch.
+      settingDao.setSetting(AppSetting("seed_completed", "true"))
+    }
 
     logAudit(
       user = currentUser,
@@ -122,6 +148,24 @@ class DentalLabRepository(private val database: AppDatabase) {
 
   // --- Users Management ---
   suspend fun allUsersSync(): List<User> = userDao.getAllSync()
+
+  /**
+   * Persists a (possibly brand-new) cloud/Firebase user into Room and returns the stored
+   * row with its real auto-generated ID. FIX: replaces the old
+   * `id = System.currentTimeMillis() % 10000` synthesis which could collide with existing
+   * rows and silently overwrite them (insert uses OnConflictStrategy.REPLACE).
+   */
+  suspend fun upsertCloudUser(user: User): User {
+    val byEmail = if (user.email.isNotBlank()) userDao.getUserByEmail(user.email) else null
+    val existing = byEmail
+      ?: if (user.username.isNotBlank()) userDao.getUserByUsername(user.username) else null
+    return if (existing != null) {
+      existing
+    } else {
+      val id = userDao.insert(user.copy(id = 0))
+      user.copy(id = id)
+    }
+  }
 
   suspend fun insertUser(user: User, currentUser: User): Long {
     val id = userDao.insert(user)
@@ -220,9 +264,10 @@ class DentalLabRepository(private val database: AppDatabase) {
 
   // --- Shipments ---
   suspend fun generateNextShipmentNumber(): String {
-    val count = shipmentDao.getShipmentCount()
-    val nextNum = count + 125 + 1
-    return String.format(Locale.US, "#%06d", nextNum)
+    // FIX: previously `count + 126`, which produced DUPLICATE numbers after deletions
+    // (and for concurrent creates). Now based on the highest issued number.
+    val maxNum = shipmentDao.getMaxShipmentNumber() ?: 125
+    return String.format(Locale.US, "#%06d", maxNum + 1)
   }
 
   suspend fun createShipment(shipment: Shipment, currentUser: User): Long {
@@ -238,15 +283,19 @@ class DentalLabRepository(private val database: AppDatabase) {
       createdByUserId = currentUser.id,
       createdByName = currentUser.fullName
     )
-    val id = shipmentDao.insert(finalShipment)
-    logAudit(
-      user = currentUser,
-      action = AuditActionType.CREATE_SHIPMENT,
-      description = "إنشاء إرسالية ${shipment.shipmentNumber} (${shipment.pieceCount} ${shipment.workTypeName} - ${shipment.labName})",
-      entityId = id,
-      entityType = "Shipment"
-    )
-    return id
+    // FIX: insert + audit log wrapped in a single transaction (previously a crash
+    // between the two could leave the audit trail inconsistent).
+    return database.withTransaction {
+      val id = shipmentDao.insert(finalShipment)
+      logAudit(
+        user = currentUser,
+        action = AuditActionType.CREATE_SHIPMENT,
+        description = "إنشاء إرسالية ${shipment.shipmentNumber} (${shipment.pieceCount} ${shipment.workTypeName} - ${shipment.labName})",
+        entityId = id,
+        entityType = "Shipment"
+      )
+      id
+    }
   }
 
   suspend fun updateShipment(shipment: Shipment, currentUser: User) {
@@ -269,9 +318,13 @@ class DentalLabRepository(private val database: AppDatabase) {
 
   suspend fun updateShipmentStatus(shipmentId: Long, newStatus: ShipmentStatus, currentUser: User) {
     val current = shipmentDao.getShipmentById(shipmentId) ?: return
-    val actualReceived = if (newStatus == ShipmentStatus.RECEIVED && current.actualReceivedDate == null) {
-      System.currentTimeMillis()
-    } else current.actualReceivedDate
+    // FIX: clear actualReceivedDate when the shipment leaves the RECEIVED state
+    // (previously the first receipt date stuck forever even after a status revert).
+    val actualReceived = when {
+      newStatus == ShipmentStatus.RECEIVED && current.actualReceivedDate == null -> System.currentTimeMillis()
+      newStatus != ShipmentStatus.RECEIVED -> null
+      else -> current.actualReceivedDate
+    }
 
     val updated = current.copy(status = newStatus, actualReceivedDate = actualReceived)
     shipmentDao.update(updated)
@@ -356,22 +409,25 @@ class DentalLabRepository(private val database: AppDatabase) {
 
   suspend fun updateInventoryItem(item: InventoryItem, currentUser: User) {
     val old = inventoryDao.getItemById(item.id)
-    inventoryDao.update(item)
-    if (old != null && old.currentStock != item.currentStock) {
-      val diff = item.currentStock - old.currentStock
-      val type = if (diff > 0) InventoryTransactionType.ADJUSTMENT_ADD else InventoryTransactionType.ADJUSTMENT_SUBTRACT
-      inventoryDao.insertTransaction(
-        InventoryTransaction(
-          itemId = item.id,
-          itemName = item.name,
-          type = type,
-          quantityChange = diff,
-          newStockLevel = item.currentStock,
-          performedByUserId = currentUser.id,
-          performedByName = currentUser.fullName,
-          reasonOrReference = "تعديل رصيد بطاقة الصنف"
+    // FIX: update + stock-transaction now run atomically.
+    database.withTransaction {
+      inventoryDao.update(item)
+      if (old != null && old.currentStock != item.currentStock) {
+        val diff = item.currentStock - old.currentStock
+        val type = if (diff > 0) InventoryTransactionType.ADJUSTMENT_ADD else InventoryTransactionType.ADJUSTMENT_SUBTRACT
+        inventoryDao.insertTransaction(
+          InventoryTransaction(
+            itemId = item.id,
+            itemName = item.name,
+            type = type,
+            quantityChange = diff,
+            newStockLevel = item.currentStock,
+            performedByUserId = currentUser.id,
+            performedByName = currentUser.fullName,
+            reasonOrReference = "تعديل رصيد بطاقة الصنف"
+          )
         )
-      )
+      }
     }
     logAudit(
       user = currentUser,
@@ -400,38 +456,43 @@ class DentalLabRepository(private val database: AppDatabase) {
     reason: String,
     currentUser: User
   ): Boolean {
-    val item = inventoryDao.getItemById(itemId) ?: return false
-    val calculatedNewStock = if (type.isAddition) {
-      item.currentStock + kotlin.math.abs(quantityChange)
-    } else {
-      (item.currentStock - kotlin.math.abs(quantityChange)).coerceAtLeast(0.0)
-    }
-    val updatedItem = item.copy(
-      currentStock = calculatedNewStock,
-      lastRestockedDate = if (type.isAddition) System.currentTimeMillis() else item.lastRestockedDate
-    )
-    inventoryDao.update(updatedItem)
-    val actualChange = if (type.isAddition) kotlin.math.abs(quantityChange) else -kotlin.math.abs(quantityChange)
-    inventoryDao.insertTransaction(
-      InventoryTransaction(
-        itemId = item.id,
-        itemName = item.name,
-        type = type,
-        quantityChange = actualChange,
-        newStockLevel = calculatedNewStock,
-        performedByUserId = currentUser.id,
-        performedByName = currentUser.fullName,
-        reasonOrReference = reason.ifEmpty { type.titleAr }
+    // FIX: read-modify-write now runs inside a transaction, and the ledger records the
+    // EFFECTIVE delta (the stock clamps at zero, so the old code could log a change that
+    // never actually happened, breaking old + change == new math).
+    return database.withTransaction {
+      val item = inventoryDao.getItemById(itemId) ?: return@withTransaction false
+      val calculatedNewStock = if (type.isAddition) {
+        item.currentStock + kotlin.math.abs(quantityChange)
+      } else {
+        (item.currentStock - kotlin.math.abs(quantityChange)).coerceAtLeast(0.0)
+      }
+      val effectiveChange = calculatedNewStock - item.currentStock
+      val updatedItem = item.copy(
+        currentStock = calculatedNewStock,
+        lastRestockedDate = if (type.isAddition) System.currentTimeMillis() else item.lastRestockedDate
       )
-    )
-    logAudit(
-      user = currentUser,
-      action = AuditActionType.UPDATE_STATUS,
-      description = "${type.titleAr} للمادة: ${item.name} بمقدار ($actualChange ${item.unit}) - الرصيد الجديد: $calculatedNewStock",
-      entityId = item.id,
-      entityType = "InventoryItem"
-    )
-    return true
+      inventoryDao.update(updatedItem)
+      inventoryDao.insertTransaction(
+        InventoryTransaction(
+          itemId = item.id,
+          itemName = item.name,
+          type = type,
+          quantityChange = effectiveChange,
+          newStockLevel = calculatedNewStock,
+          performedByUserId = currentUser.id,
+          performedByName = currentUser.fullName,
+          reasonOrReference = reason.ifEmpty { type.titleAr }
+        )
+      )
+      logAudit(
+        user = currentUser,
+        action = AuditActionType.UPDATE_STATUS,
+        description = "${type.titleAr} للمادة: ${item.name} بمقدار ($effectiveChange ${item.unit}) - الرصيد الجديد: $calculatedNewStock",
+        entityId = item.id,
+        entityType = "InventoryItem"
+      )
+      true
+    }
   }
 
   fun getItemTransactions(itemId: Long): Flow<List<InventoryTransaction>> {
@@ -439,8 +500,23 @@ class DentalLabRepository(private val database: AppDatabase) {
   }
 
   // --- Devices & Security Management ---
+  /**
+   * FIX: this is now a REAL upsert keyed by `deviceId`. Previously it was a plain
+   * REPLACE-insert on the auto-increment PK, and cloud-fetched bindings are built with
+   * `id = 0` — so every cloud sync inserted a NEW row. The table grew unboundedly and
+   * `WHERE deviceId = ? LIMIT 1` (no ORDER BY) could return a stale row, keeping
+   * BLOCKED/REVOKED devices logged in.
+   */
   suspend fun insertOrUpdateDevice(device: DeviceBinding): Long {
-    return deviceBindingDao.insert(device)
+    return database.withTransaction {
+      val existing = deviceBindingDao.getDeviceById(device.deviceId)
+      if (existing != null) {
+        deviceBindingDao.update(device.copy(id = existing.id))
+        existing.id
+      } else {
+        deviceBindingDao.insert(device)
+      }
+    }
   }
 
   suspend fun updateDeviceStatus(

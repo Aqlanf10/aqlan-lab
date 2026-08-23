@@ -126,6 +126,10 @@ interface ShipmentDao {
   @Query("SELECT COUNT(*) FROM shipments")
   suspend fun getShipmentCount(): Int
 
+  // FIX: highest issued shipment number, used to generate collision-free sequential numbers
+  @Query("SELECT MAX(CAST(SUBSTR(shipmentNumber, 2) AS INTEGER)) FROM shipments")
+  suspend fun getMaxShipmentNumber(): Int?
+
   @Query("DELETE FROM shipments")
   suspend fun deleteAllShipments()
 }
@@ -289,10 +293,12 @@ interface DeviceBindingDao {
   @Query("SELECT COUNT(*) FROM device_bindings WHERE userId = :userId AND status = 'APPROVED'")
   suspend fun getApprovedDevicesCountForUser(userId: Long): Int
 
-  @Query("SELECT * FROM device_bindings WHERE deviceId = :deviceId LIMIT 1")
+  // FIX: ORDER BY registeredAt DESC so LIMIT 1 always returns the LATEST snapshot row
+  // (legacy databases may contain duplicate rows per deviceId from the old broken upsert)
+  @Query("SELECT * FROM device_bindings WHERE deviceId = :deviceId ORDER BY registeredAt DESC LIMIT 1")
   suspend fun getDeviceById(deviceId: String): DeviceBinding?
 
-  @Query("SELECT * FROM device_bindings WHERE deviceId = :deviceId LIMIT 1")
+  @Query("SELECT * FROM device_bindings WHERE deviceId = :deviceId ORDER BY registeredAt DESC LIMIT 1")
   fun observeDeviceById(deviceId: String): Flow<DeviceBinding?>
 
   @Insert(onConflict = OnConflictStrategy.REPLACE)

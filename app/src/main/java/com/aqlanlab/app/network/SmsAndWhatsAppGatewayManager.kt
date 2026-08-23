@@ -80,11 +80,16 @@ class SmsAndWhatsAppGatewayManager(private val context: Context) {
   }
 
   fun saveSmsConfig(config: SmsGatewayConfig) {
+    // SECURITY FIX: reject non-HTTPS endpoints — gateway credentials (API keys) are
+    // sent to this URL, and a plain-HTTP URL would leak them in cleartext.
+    val safeUrl = config.apiUrl.trim().let { url ->
+      if (url.isEmpty() || url.startsWith("https://")) url else providerDefaultHttps(config.provider)
+    }
     prefs.edit()
       .putBoolean("sms_enabled", config.isEnabled)
       .putString("sms_provider", config.provider.id)
       .putString("sms_sender_id", config.senderId.trim())
-      .putString("sms_api_url", config.apiUrl.trim())
+      .putString("sms_api_url", safeUrl)
       .putString("sms_api_username", config.apiUsername.trim())
       .putString("sms_api_key", config.apiKeyOrPassword.trim())
       .putString("sms_account_sid", config.accountSidOrToken.trim())
@@ -92,6 +97,8 @@ class SmsAndWhatsAppGatewayManager(private val context: Context) {
       .putString("sms_admin_phone", config.defaultAdminPhone.trim())
       .apply()
   }
+
+  private fun providerDefaultHttps(provider: SmsProvider): String = provider.defaultEndpoint
 
   // ─── WHATSAPP CONFIGURATION LOAD / SAVE ──────────────────────
 
@@ -162,14 +169,16 @@ class SmsAndWhatsAppGatewayManager(private val context: Context) {
             .addHeader("Content-Type", "application/json")
             .build()
 
-          val response = httpClient.newCall(request).execute()
-          val respBody = response.body?.string() ?: ""
-          if (response.isSuccessful) {
-            Log.d(TAG, "SMS Sent via Yemen Mobile: $respBody")
-            Pair(true, "تم إرسال رسالة الـ SMS بنجاح باسم [${config.senderId}] عبر يمن موبايل 🚀")
-          } else {
-            Log.e(TAG, "Yemen Mobile SMS Failed: ${response.code} $respBody")
-            Pair(false, "فشل الإرسال من بوابة يمن موبايل (كود: ${response.code}). يرجى التحقق من الرصيد والبيانات.")
+          // FIX: response bodies must be closed (leaked connections under repeated use)
+          httpClient.newCall(request).execute().use { response ->
+            val respBody = response.body?.string() ?: ""
+            if (response.isSuccessful) {
+              Log.d(TAG, "SMS sent via Yemen Mobile")
+              Pair(true, "تم إرسال رسالة الـ SMS بنجاح باسم [${config.senderId}] عبر يمن موبايل 🚀")
+            } else {
+              Log.e(TAG, "Yemen Mobile SMS Failed: ${response.code}")
+              Pair(false, "فشل الإرسال من بوابة يمن موبايل (كود: ${response.code}). يرجى التحقق من الرصيد والبيانات.")
+            }
           }
         }
 
@@ -186,20 +195,25 @@ class SmsAndWhatsAppGatewayManager(private val context: Context) {
             .post(body)
             .build()
 
-          val response = httpClient.newCall(request).execute()
-          if (response.isSuccessful) {
-            Pair(true, "تم إرسال الرسالة بنجاح عبر Unifonic باسم [${config.senderId}]")
-          } else {
-            Pair(false, "فشل الإرسال من Unifonic: ${response.message}")
+          httpClient.newCall(request).execute().use { response ->
+            if (response.isSuccessful) {
+              Pair(true, "تم إرسال الرسالة بنجاح عبر Unifonic باسم [${config.senderId}]")
+            } else {
+              Pair(false, "فشل الإرسال من Unifonic: ${response.message}")
+            }
           }
         }
 
         SmsProvider.CUSTOM_HTTP, SmsProvider.TWILIO -> {
+          // SECURITY FIX: send the credential ONCE (Authorization header) instead of
+          // duplicating it in the JSON body, and require an HTTPS endpoint.
+          if (!config.apiUrl.startsWith("https://")) {
+            return@withContext Pair(false, "رابط البوابة المخصصة يجب أن يبدأ بـ https://")
+          }
           val json = JSONObject().apply {
             put("sender_id", config.senderId)
             put("to", cleanPhone)
             put("text", messageText)
-            put("api_key", config.apiKeyOrPassword)
           }
           val body = json.toString().toRequestBody("application/json".toMediaType())
           val request = Request.Builder()
@@ -208,11 +222,12 @@ class SmsAndWhatsAppGatewayManager(private val context: Context) {
             .addHeader("Authorization", "Bearer ${config.apiKeyOrPassword}")
             .build()
 
-          val response = httpClient.newCall(request).execute()
-          if (response.isSuccessful) {
-            Pair(true, "تم إرسال رسالة SMS بنجاح عبر البوابة السحابية باسم [${config.senderId}]")
-          } else {
-            Pair(false, "خطأ في الاتصال بالبوابة (${response.code})")
+          httpClient.newCall(request).execute().use { response ->
+            if (response.isSuccessful) {
+              Pair(true, "تم إرسال رسالة SMS بنجاح عبر البوابة السحابية باسم [${config.senderId}]")
+            } else {
+              Pair(false, "خطأ في الاتصال بالبوابة (${response.code})")
+            }
           }
         }
       }
@@ -251,11 +266,12 @@ class SmsAndWhatsAppGatewayManager(private val context: Context) {
           val body = json.toString().toRequestBody("application/json".toMediaType())
           val request = Request.Builder().url(endpoint).post(body).build()
 
-          val response = httpClient.newCall(request).execute()
-          if (response.isSuccessful) {
-            Pair(true, "تم إرسال رسالة الواتساب السحابية آلياً بنجاح عبر UltraMsg 🟢")
-          } else {
-            Pair(false, "فشل الإرسال من خادم الواتساب: ${response.message}")
+          httpClient.newCall(request).execute().use { response ->
+            if (response.isSuccessful) {
+              Pair(true, "تم إرسال رسالة الواتساب السحابية آلياً بنجاح عبر UltraMsg 🟢")
+            } else {
+              Pair(false, "فشل الإرسال من خادم الواتساب: ${response.message}")
+            }
           }
         }
 
@@ -274,15 +290,21 @@ class SmsAndWhatsAppGatewayManager(private val context: Context) {
             .addHeader("Authorization", "Bearer ${config.apiToken}")
             .build()
 
-          val response = httpClient.newCall(request).execute()
-          if (response.isSuccessful) {
-            Pair(true, "تم إرسال رسالة الواتساب الرسمية عبر Meta Cloud API 🟢")
-          } else {
-            Pair(false, "خطأ من Meta Cloud API: ${response.code}")
+          httpClient.newCall(request).execute().use { response ->
+            if (response.isSuccessful) {
+              Pair(true, "تم إرسال رسالة الواتساب الرسمية عبر Meta Cloud API 🟢")
+            } else {
+              Pair(false, "خطأ من Meta Cloud API: ${response.code}")
+            }
           }
         }
 
         WhatsAppGatewayMode.CUSTOM_WEBHOOK -> {
+          // SECURITY FIX: require an HTTPS webhook (the message content and any token
+          // would otherwise travel in cleartext)
+          if (!config.webhookUrl.startsWith("https://")) {
+            return@withContext Pair(false, "رابط الويب هوك يجب أن يبدأ بـ https://")
+          }
           val json = JSONObject().apply {
             put("phone", cleanPhone)
             put("message", messageText)
@@ -290,11 +312,12 @@ class SmsAndWhatsAppGatewayManager(private val context: Context) {
           val body = json.toString().toRequestBody("application/json".toMediaType())
           val request = Request.Builder().url(config.webhookUrl).post(body).build()
 
-          val response = httpClient.newCall(request).execute()
-          if (response.isSuccessful) {
-            Pair(true, "تم إرسال رسالة الواتساب بنجاح عبر الويب هوك")
-          } else {
-            Pair(false, "تعذر الإرسال عبر الويب هوك: ${response.code}")
+          httpClient.newCall(request).execute().use { response ->
+            if (response.isSuccessful) {
+              Pair(true, "تم إرسال رسالة الواتساب بنجاح عبر الويب هوك")
+            } else {
+              Pair(false, "تعذر الإرسال عبر الويب هوك: ${response.code}")
+            }
           }
         }
 

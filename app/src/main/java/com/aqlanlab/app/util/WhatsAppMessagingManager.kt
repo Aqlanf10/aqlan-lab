@@ -60,8 +60,17 @@ enum class WhatsAppTemplateType(val id: String, val titleAr: String, val iconEmo
 
 object WhatsAppMessagingManager {
 
-  private val dateFormat = SimpleDateFormat("yyyy/MM/dd", Locale("ar"))
-  private val dateTimeFormat = SimpleDateFormat("yyyy/MM/dd - hh:mm a", Locale("ar"))
+  // FIX: SimpleDateFormat is not thread-safe; these singletons were shared between
+  // the main thread and IO coroutines. Formatters are now per-thread.
+  private val dateFormat: ThreadLocal<SimpleDateFormat> = object : ThreadLocal<SimpleDateFormat>() {
+    override fun initialValue() = SimpleDateFormat("yyyy/MM/dd", Locale("ar"))
+  }
+  private val dateTimeFormat: ThreadLocal<SimpleDateFormat> = object : ThreadLocal<SimpleDateFormat>() {
+    override fun initialValue() = SimpleDateFormat("yyyy/MM/dd - hh:mm a", Locale("ar"))
+  }
+
+  fun formatDate(timestamp: Long): String = dateFormat.get()!!.format(java.util.Date(timestamp))
+  fun formatDateTime(timestamp: Long): String = dateTimeFormat.get()!!.format(java.util.Date(timestamp))
 
   /**
    * Formats a local or international phone number for WhatsApp URL
@@ -117,7 +126,7 @@ object WhatsAppMessagingManager {
         ──────────────────────
         👤 *اسم المريض:* ${patientName.ifBlank { "المحترم" }}
         🏷️ *رقم الإرسالية / الفاتورة:* ${shipment?.shipmentNumber ?: "---"}
-        📅 *التاريخ:* ${dateFormat.format(Date(shipment?.orderDate ?: System.currentTimeMillis()))}
+        📅 *التاريخ:* ${formatDate(shipment?.orderDate ?: System.currentTimeMillis())}
         🛠️ *نوع العمل:* *${shipment?.workTypeName ?: "تركيبة أسنان"}*
         $piecesText
         $teethText
@@ -193,7 +202,7 @@ object WhatsAppMessagingManager {
         🧾 *سند قبض مالي إلكتروني*
         ──────────────────────
         🏷️ *رقم السند:* ${payment?.receiptNumber?.ifBlank { "#REC-${System.currentTimeMillis() % 100000}" } ?: "#REC"}
-        📅 *تاريخ الدفع:* ${dateTimeFormat.format(Date(payment?.paymentDate ?: System.currentTimeMillis()))}
+        📅 *تاريخ الدفع:* ${formatDateTime(payment?.paymentDate ?: System.currentTimeMillis())}
         👤 *المستلم منه / الحساب:* *${patientName.ifBlank { payment?.labName ?: "المحترم" }}*
         💳 *طريقة الدفع:* ${payment?.paymentMethod?.titleAr ?: "نقداً"}
         ──────────────────────
@@ -244,7 +253,7 @@ object WhatsAppMessagingManager {
         🛠️ *العمل:* *${shipment?.workTypeName ?: "تركيبة"}* (${shipment?.pieceCount ?: 1} قطع)
         🦷 *الأسنان:* ${shipment?.toothNumbers?.ifBlank { "محددة بالطلب" } ?: "محددة بالطلب"}
         🎨 *اللون:* ${shipment?.shade ?: "A2"}
-        ⏰ *تاريخ التسليم المتوقع:* ${dateFormat.format(Date(shipment?.expectedDeliveryDate ?: System.currentTimeMillis()))}
+        ⏰ *تاريخ التسليم المتوقع:* ${formatDate(shipment?.expectedDeliveryDate ?: System.currentTimeMillis())}
         ${if (shipment?.isUrgent == true) "🚨 *درجة الاستعجال:* عاجل جداً (Urgent) ⚡\n" else ""}──────────────────────
         ${if (customNotes.isNotBlank()) "📝 *ملاحظة الطبيب:* $customNotes\n──────────────────────\n" else ""}يرجى إبلاغنا فور الانتهاء من العمل لتنسيق استلامه مع المندوب.
         📞 للتنسيق: ${ClinicInfo.PHONES}

@@ -31,6 +31,9 @@ import com.aqlanlab.app.ui.components.*
 import com.aqlanlab.app.ui.theme.*
 import com.aqlanlab.app.ui.viewmodel.DentalLabViewModel
 import com.aqlanlab.app.util.PdfReportGenerator
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.io.File
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -102,6 +105,9 @@ fun ShipmentsScreen(
   var showPdfExportDialog by remember { mutableStateOf(false) }
   var generatedPdfFile by remember { mutableStateOf<File?>(null) }
   var isGeneratingPdf by remember { mutableStateOf(false) }
+  // FIX: PDF list generation previously ran synchronously on the main thread — the
+  // isGeneratingPdf spinner could never even render. Generation now runs on IO.
+  val pdfScope = rememberCoroutineScope()
 
   Scaffold(
     topBar = {
@@ -140,20 +146,24 @@ fun ShipmentsScreen(
                   searchQuery.isNotBlank() -> "نتائج البحث: $searchQuery"
                   else -> "كافة الإرساليات النشطة"
                 }
-                val pdf = PdfReportGenerator.generateShipmentsListPdf(
-                  context = context,
-                  title = "تقرير كشف إرساليات معمل الأسنان",
-                  subtitle = "الفلترة: $filterDesc (${finalDisplayShipments.size} إرسالية)",
-                  shipments = finalDisplayShipments,
-                  currency = currency,
-                  userRole = activeUser.role
-                )
-                isGeneratingPdf = false
-                if (pdf != null && pdf.exists()) {
-                  generatedPdfFile = pdf
-                  showPdfExportDialog = true
-                } else {
-                  Toast.makeText(context, "فشل إنشاء تقرير PDF", Toast.LENGTH_SHORT).show()
+                pdfScope.launch(Dispatchers.IO) {
+                  val pdf = PdfReportGenerator.generateShipmentsListPdf(
+                    context = context,
+                    title = "تقرير كشف إرساليات معمل الأسنان",
+                    subtitle = "الفلترة: $filterDesc (${finalDisplayShipments.size} إرسالية)",
+                    shipments = finalDisplayShipments,
+                    currency = currency,
+                    userRole = activeUser.role
+                  )
+                  withContext(Dispatchers.Main) {
+                    isGeneratingPdf = false
+                    if (pdf != null && pdf.exists()) {
+                      generatedPdfFile = pdf
+                      showPdfExportDialog = true
+                    } else {
+                      Toast.makeText(context, "فشل إنشاء تقرير PDF", Toast.LENGTH_SHORT).show()
+                    }
+                  }
                 }
               }
             },

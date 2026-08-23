@@ -67,7 +67,11 @@ enum class ReportPeriod(val titleAr: String) {
 }
 
 class DentalLabViewModel(application: Application) : AndroidViewModel(application) {
-  private val database = AppDatabase.getDatabase(application, viewModelScope)
+  // Application-scoped scope for the DB singleton (survives onCleared; process-lifetime)
+  private val appDbScope = kotlinx.coroutines.CoroutineScope(
+    kotlinx.coroutines.SupervisorJob() + Dispatchers.IO
+  )
+  private val database = AppDatabase.getDatabase(application, appDbScope)
   private val repository = DentalLabRepository(database)
   val networkMonitor = NetworkMonitor(application)
   val cloudSyncManager = CloudSyncManager(application, database)
@@ -138,6 +142,21 @@ class DentalLabViewModel(application: Application) : AndroidViewModel(applicatio
   private val _appLockEnabled = MutableStateFlow(true)
   val appLockEnabled: StateFlow<Boolean> = _appLockEnabled.asStateFlow()
 
+  // Firestore device listener handle (removed in onCleared to avoid leaks)
+  private var deviceListenerRegistration: com.google.firebase.firestore.ListenerRegistration? = null
+
+  // Deep-link route requested from a notification tap (consumed by MainAppScaffold)
+  private val _pendingDeepLinkRoute = MutableStateFlow<String?>(null)
+  val pendingDeepLinkRoute: StateFlow<String?> = _pendingDeepLinkRoute.asStateFlow()
+
+  fun queueDeepLinkRoute(route: String) {
+    if (route.isNotBlank()) _pendingDeepLinkRoute.value = route
+  }
+
+  fun consumeDeepLinkRoute() {
+    _pendingDeepLinkRoute.value = null
+  }
+
   init {
     viewModelScope.launch(Dispatchers.IO) {
       appVersionManager.checkAppVersion()
@@ -146,14 +165,11 @@ class DentalLabViewModel(application: Application) : AndroidViewModel(applicatio
       firebaseStorageBackupManager.fetchAvailableStorageBackups(clinicId.value)
     }
 
-    // Monitor real-time upcoming delivery dates and notify when delivery is due or overdue
-    viewModelScope.launch {
-      allShipments.collect { shipments ->
-        if (_notificationsEnabled.value && _activeUser.value != null && shipments.isNotEmpty()) {
-          NotificationHelper.checkAndNotifyUpcomingDeliveries(getApplication(), shipments)
-        }
-      }
-    }
+    // NOTE: the notification monitor that collects `allShipments` was moved into a
+    // dedicated init block placed AFTER the `allShipments` / `_notificationsEnabled`
+    // declarations. Kotlin runs property initializers and init blocks in source order,
+    // and viewModelScope uses Dispatchers.Main.immediate, so collecting a property that
+    // is declared later inside this first init block caused a startup NullPointerException.
 
     // Monitor current device status in real-time (Forced session termination if Blocked/Revoked/Pending)
     viewModelScope.launch {
@@ -168,7 +184,7 @@ class DentalLabViewModel(application: Application) : AndroidViewModel(applicatio
 
     // Real-time Firestore Snapshot Listener for Current Device
     try {
-      firebaseAuthManager.listenToDeviceInFirestore(deviceSecurityManager.getUniqueDeviceId()) { status, cloudBinding ->
+      deviceListenerRegistration = firebaseAuthManager.listenToDeviceInFirestore(deviceSecurityManager.getUniqueDeviceId()) { status, cloudBinding ->
         viewModelScope.launch(Dispatchers.IO) {
           if (cloudBinding != null) {
             repository.insertOrUpdateDevice(cloudBinding)
@@ -183,6 +199,16 @@ class DentalLabViewModel(application: Application) : AndroidViewModel(applicatio
     } catch (e: Exception) {
       Log.w("DentalLabViewModel", "Firestore device listener not started: ${e.message}")
     }
+  }
+
+  override fun onCleared() {
+    try {
+      deviceListenerRegistration?.remove()
+      deviceListenerRegistration = null
+    } catch (e: Exception) {
+      Log.w("DentalLabViewModel", "Device listener removal failed: ${e.message}")
+    }
+    super.onCleared()
   }
 
   val isAuthenticated: StateFlow<Boolean> = kotlinx.coroutines.flow.combine(_activeUser, _isAppLocked) { user, locked ->
@@ -209,14 +235,17 @@ class DentalLabViewModel(application: Application) : AndroidViewModel(applicatio
     .stateIn(viewModelScope, SharingStarted.Eagerly, false)
 
   fun getActiveUserSafe(): User {
+    // SECURITY FIX: previously fabricated a hardcoded SUPER_ADMIN (the owner's identity)
+    // whenever no user was signed in, forging audit-log entries and granting privileged
+    // writes. Now returns a clearly-marked, low-privilege "System" identity instead.
     return _activeUser.value ?: User(
-      id = 1,
-      username = "aqlan",
-      fullName = "د. عقلان الكامل",
-      email = "Aqlanf10@gmail.com",
-      role = UserRole.SUPER_ADMIN,
+      id = 0,
+      username = "system",
+      fullName = "النظام (بدون جلسة دخول)",
+      email = "",
+      role = UserRole.STAFF,
       pinCode = "",
-      avatarColor = 0xFFD32F2F,
+      avatarColor = 0xFF64748B,
       isActive = true,
       isApproved = true
     )
@@ -355,6 +384,13 @@ class DentalLabViewModel(application: Application) : AndroidViewModel(applicatio
     }
     if (matchingUser == null) return false
 
+    // Upgrade legacy (weak) PIN hashes to the stronger v2 format on successful login
+    if (SecurityUtils.needsRehash(matchingUser.pinCode)) {
+      val upgraded = matchingUser.copy(pinCode = SecurityUtils.hashPin(pin.trim()))
+      updateUser(upgraded)
+      matchingUser = upgraded
+    }
+
     val localDevice = currentDeviceBinding.value
     if (localDevice != null && localDevice.status != DeviceStatus.APPROVED) {
       if (matchingUser.role == UserRole.SUPER_ADMIN) {
@@ -384,11 +420,17 @@ class DentalLabViewModel(application: Application) : AndroidViewModel(applicatio
   }
 
   fun lockApp() {
-    _isAppLocked.value = true
+    // Honor the user-visible "app lock" setting (previously the toggle was a placebo)
+    if (_appLockEnabled.value) {
+      _isAppLocked.value = true
+    }
   }
 
   fun setAppLockEnabled(enabled: Boolean) {
     _appLockEnabled.value = enabled
+    viewModelScope.launch(Dispatchers.IO) {
+      repository.setSetting("app_lock_enabled", enabled.toString())
+    }
   }
 
   fun changeDoctorMasterPin(newPin: String) {
@@ -511,23 +553,32 @@ class DentalLabViewModel(application: Application) : AndroidViewModel(applicatio
           return@launch
         }
         val isOwner = matchedUser.role == UserRole.SUPER_ADMIN || matchedUser.email.equals(com.aqlanlab.app.ui.components.ClinicInfo.EMAIL, ignoreCase = true)
+        var effectiveUser = matchedUser
         val isPinValid = if (matchedUser.pinCode.isBlank() && isOwner) {
           // If Dr. Aqlan has not configured a master PIN yet, set entered PIN as master PIN
           val updated = matchedUser.copy(pinCode = SecurityUtils.hashPin(pinOrPass.trim()))
           repository.updateUser(updated, matchedUser)
+          effectiveUser = updated
           true
         } else {
           matchedUser.pinCode.isNotBlank() && SecurityUtils.verifyPin(pinOrPass, matchedUser.pinCode)
         }
 
+        // Upgrade legacy (weak) PIN hashes to the stronger v2 format on successful login
+        if (isPinValid && SecurityUtils.needsRehash(effectiveUser.pinCode)) {
+          val upgraded = effectiveUser.copy(pinCode = SecurityUtils.hashPin(pinOrPass.trim()))
+          repository.updateUser(upgraded, effectiveUser)
+          effectiveUser = upgraded
+        }
+
         if (isPinValid) {
           // Verify Device Authorization before granting access
-          val authOutcome = verifyAndProcessDeviceAuthorization(matchedUser)
+          val authOutcome = verifyAndProcessDeviceAuthorization(effectiveUser)
           when (authOutcome) {
             is DeviceAuthOutcome.Allowed -> {
-              _activeUser.value = matchedUser
+              _activeUser.value = effectiveUser
               _isAppLocked.value = false
-              onResult(true, "مرحباً ${matchedUser.fullName}")
+              onResult(true, "مرحباً ${effectiveUser.fullName}")
             }
             is DeviceAuthOutcome.PendingApproval -> {
               _activeUser.value = null
@@ -555,16 +606,21 @@ class DentalLabViewModel(application: Application) : AndroidViewModel(applicatio
         if (res.isSuccess) {
           val fbUser = res.getOrNull()
           val isOwner = fbUser?.email?.equals(com.aqlanlab.app.ui.components.ClinicInfo.EMAIL, ignoreCase = true) == true
-          val userToSet = matchedUser ?: User(
-            id = if (isOwner) 1 else (System.currentTimeMillis() % 10000),
-            username = fbUser?.email?.substringBefore("@") ?: "user",
-            fullName = if (isOwner) com.aqlanlab.app.ui.components.ClinicInfo.DOCTOR_NAME else (fbUser?.displayName ?: "موظف المركز"),
-            email = fbUser?.email ?: "",
-            role = if (isOwner) UserRole.SUPER_ADMIN else UserRole.STAFF,
-            pinCode = "",
-            isActive = true,
-            isApproved = true,
-            maxDevices = if (isOwner) 5 else 2
+          // FIX: previously synthesized IDs via System.currentTimeMillis() % 10000, which
+          // could collide with existing rows and silently overwrite them (REPLACE strategy).
+          // Now the user is persisted through the repository and gets a real auto-generated ID.
+          val userToSet = matchedUser ?: repository.upsertCloudUser(
+            User(
+              id = 0,
+              username = fbUser?.email?.substringBefore("@") ?: "user",
+              fullName = if (isOwner) com.aqlanlab.app.ui.components.ClinicInfo.DOCTOR_NAME else (fbUser?.displayName ?: "موظف المركز"),
+              email = fbUser?.email ?: "",
+              role = if (isOwner) UserRole.SUPER_ADMIN else UserRole.STAFF,
+              pinCode = "",
+              isActive = true,
+              isApproved = true,
+              maxDevices = if (isOwner) 5 else 2
+            )
           )
 
           val authOutcome = verifyAndProcessDeviceAuthorization(userToSet)
@@ -606,16 +662,19 @@ class DentalLabViewModel(application: Application) : AndroidViewModel(applicatio
         val fbUser = result.getOrNull()
         val isOwner = fbUser?.email?.equals(com.aqlanlab.app.ui.components.ClinicInfo.EMAIL, ignoreCase = true) == true
         val matchedUser = allUsers.value.find { it.username.equals(email.substringBefore("@"), ignoreCase = true) }
-        val finalUser = matchedUser ?: User(
-          id = if (isOwner) 1 else (System.currentTimeMillis() % 10000),
-          username = fbUser?.email?.substringBefore("@") ?: "user",
-          fullName = if (isOwner) com.aqlanlab.app.ui.components.ClinicInfo.DOCTOR_NAME else (fbUser?.displayName ?: "موظف المركز"),
-          email = fbUser?.email ?: "",
-          role = if (isOwner) UserRole.SUPER_ADMIN else UserRole.STAFF,
-          pinCode = "",
-          isActive = true,
-          isApproved = true,
-          maxDevices = if (isOwner) 5 else 2
+        // FIX: real auto-generated IDs via repository instead of timestamp collisions
+        val finalUser = matchedUser ?: repository.upsertCloudUser(
+          User(
+            id = 0,
+            username = fbUser?.email?.substringBefore("@") ?: "user",
+            fullName = if (isOwner) com.aqlanlab.app.ui.components.ClinicInfo.DOCTOR_NAME else (fbUser?.displayName ?: "موظف المركز"),
+            email = fbUser?.email ?: "",
+            role = if (isOwner) UserRole.SUPER_ADMIN else UserRole.STAFF,
+            pinCode = "",
+            isActive = true,
+            isApproved = true,
+            maxDevices = if (isOwner) 5 else 2
+          )
         )
 
         val authOutcome = verifyAndProcessDeviceAuthorization(finalUser)
@@ -636,16 +695,20 @@ class DentalLabViewModel(application: Application) : AndroidViewModel(applicatio
       if (result.isSuccess) {
         val fbUser = result.getOrNull()
         val isOwner = fbUser?.email?.equals(com.aqlanlab.app.ui.components.ClinicInfo.EMAIL, ignoreCase = true) == true
-        val finalUser = User(
-          id = if (isOwner) 1 else (System.currentTimeMillis() % 10000),
-          username = fbUser?.email?.substringBefore("@") ?: "user",
-          fullName = if (isOwner) com.aqlanlab.app.ui.components.ClinicInfo.DOCTOR_NAME else (fbUser?.displayName ?: "موظف المركز"),
-          email = fbUser?.email ?: "",
-          role = if (isOwner) UserRole.SUPER_ADMIN else UserRole.STAFF,
-          pinCode = "",
-          isActive = true,
-          isApproved = true,
-          maxDevices = if (isOwner) 5 else 2
+        val matchedUser = allUsers.value.find { it.email.equals(fbUser?.email, ignoreCase = true) }
+        // FIX: real auto-generated IDs via repository instead of timestamp collisions
+        val finalUser = matchedUser ?: repository.upsertCloudUser(
+          User(
+            id = 0,
+            username = fbUser?.email?.substringBefore("@") ?: "user",
+            fullName = if (isOwner) com.aqlanlab.app.ui.components.ClinicInfo.DOCTOR_NAME else (fbUser?.displayName ?: "موظف المركز"),
+            email = fbUser?.email ?: "",
+            role = if (isOwner) UserRole.SUPER_ADMIN else UserRole.STAFF,
+            pinCode = "",
+            isActive = true,
+            isApproved = true,
+            maxDevices = if (isOwner) 5 else 2
+          )
         )
 
         val authOutcome = verifyAndProcessDeviceAuthorization(finalUser)
@@ -680,16 +743,19 @@ class DentalLabViewModel(application: Application) : AndroidViewModel(applicatio
         if (fbUser != null) {
           viewModelScope.launch {
             val isOwner = fbUser.email?.equals(com.aqlanlab.app.ui.components.ClinicInfo.EMAIL, ignoreCase = true) == true
-            val finalUser = User(
-              id = if (isOwner) 1 else (System.currentTimeMillis() % 10000),
-              username = fbUser.phoneNumber ?: "user",
-              fullName = if (isOwner) com.aqlanlab.app.ui.components.ClinicInfo.DOCTOR_NAME else (fbUser.displayName ?: "مستخدم المركز"),
-              email = fbUser.email ?: "${fbUser.phoneNumber}@aqlanlab.com",
-              role = if (isOwner) UserRole.SUPER_ADMIN else UserRole.STAFF,
-              pinCode = "",
-              isActive = true,
-              isApproved = true,
-              maxDevices = if (isOwner) 5 else 2
+            // FIX: real auto-generated IDs via repository instead of timestamp collisions
+            val finalUser = repository.upsertCloudUser(
+              User(
+                id = 0,
+                username = fbUser.phoneNumber ?: "user",
+                fullName = if (isOwner) com.aqlanlab.app.ui.components.ClinicInfo.DOCTOR_NAME else (fbUser.displayName ?: "مستخدم المركز"),
+                email = fbUser.email ?: "${fbUser.phoneNumber}@aqlanlab.com",
+                role = if (isOwner) UserRole.SUPER_ADMIN else UserRole.STAFF,
+                pinCode = "",
+                isActive = true,
+                isApproved = true,
+                maxDevices = if (isOwner) 5 else 2
+              )
             )
             val authOutcome = verifyAndProcessDeviceAuthorization(finalUser)
             if (authOutcome is DeviceAuthOutcome.Allowed) {
@@ -713,16 +779,19 @@ class DentalLabViewModel(application: Application) : AndroidViewModel(applicatio
       if (result.isSuccess) {
         val fbUser = result.getOrNull()
         val isOwner = fbUser?.email?.equals(com.aqlanlab.app.ui.components.ClinicInfo.EMAIL, ignoreCase = true) == true
-        val finalUser = User(
-          id = if (isOwner) 1 else (System.currentTimeMillis() % 10000),
-          username = fbUser?.phoneNumber ?: "user",
-          fullName = if (isOwner) com.aqlanlab.app.ui.components.ClinicInfo.DOCTOR_NAME else (fbUser?.displayName ?: "مستخدم المركز"),
-          email = fbUser?.email ?: "${fbUser?.phoneNumber}@aqlanlab.com",
-          role = if (isOwner) UserRole.SUPER_ADMIN else UserRole.STAFF,
-          pinCode = "",
-          isActive = true,
-          isApproved = true,
-          maxDevices = if (isOwner) 5 else 2
+        // FIX: real auto-generated IDs via repository instead of timestamp collisions
+        val finalUser = repository.upsertCloudUser(
+          User(
+            id = 0,
+            username = fbUser?.phoneNumber ?: "user",
+            fullName = if (isOwner) com.aqlanlab.app.ui.components.ClinicInfo.DOCTOR_NAME else (fbUser?.displayName ?: "مستخدم المركز"),
+            email = fbUser?.email ?: "${fbUser?.phoneNumber}@aqlanlab.com",
+            role = if (isOwner) UserRole.SUPER_ADMIN else UserRole.STAFF,
+            pinCode = "",
+            isActive = true,
+            isApproved = true,
+            maxDevices = if (isOwner) 5 else 2
+          )
         )
         val authOutcome = verifyAndProcessDeviceAuthorization(finalUser)
         if (authOutcome is DeviceAuthOutcome.Allowed) {
@@ -793,11 +862,13 @@ class DentalLabViewModel(application: Application) : AndroidViewModel(applicatio
   fun checkDueDeliveriesNow(onComplete: (Int) -> Unit = {}) {
     viewModelScope.launch {
       val shipments = allShipments.value
-      val count = NotificationHelper.checkAndNotifyUpcomingDeliveries(
-        context = getApplication(),
-        shipments = shipments,
-        thresholdHours = 48
-      )
+      val count = withContext(Dispatchers.Default) {
+        NotificationHelper.checkAndNotifyUpcomingDeliveries(
+          context = getApplication(),
+          shipments = shipments,
+          thresholdHours = 48
+        )
+      }
       onComplete(count)
     }
   }
@@ -899,6 +970,56 @@ class DentalLabViewModel(application: Application) : AndroidViewModel(applicatio
   val allPayments: StateFlow<List<Payment>> = repository.allPayments
     .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
 
+  // Secondary init block: intentionally placed AFTER the `allShipments` / `_currency` /
+  // `_exchangeRates` / `_notificationsEnabled` property declarations so that the
+  // collectors below can never observe an uninitialized property (startup-crash fix).
+  init {
+    // Restore persisted user preferences (previously: currency, exchange rates and the
+    // app-lock setting were silently reset to defaults on every app restart).
+    viewModelScope.launch(Dispatchers.IO) {
+      try {
+        _currency.value = repository.getSetting("currency", "SAR")
+
+        val appLockSetting = repository.getSetting("app_lock_enabled", "true") == "true"
+        _appLockEnabled.value = appLockSetting
+        if (!appLockSetting) {
+          _isAppLocked.value = false
+        }
+
+        val usdToYer = repository.getSetting("exchange_rate_usd_to_yer", "0").toDoubleOrNull()
+        val sarToYer = repository.getSetting("exchange_rate_sar_to_yer", "0").toDoubleOrNull()
+        val usdToSar = repository.getSetting("exchange_rate_usd_to_sar", "0").toDoubleOrNull()
+        if (usdToYer != null && usdToYer > 0 && sarToYer != null && sarToYer > 0 &&
+          usdToSar != null && usdToSar > 0
+        ) {
+          val source = repository.getSetting("exchange_rate_source", "")
+          _exchangeRates.value = ExchangeRates(
+            usdToYer = usdToYer,
+            sarToYer = sarToYer,
+            usdToSar = usdToSar,
+            source = source.ifEmpty { "معدلات محفوظة" },
+            isLive = false,
+            lastUpdated = System.currentTimeMillis()
+          )
+        }
+      } catch (e: Exception) {
+        Log.w("DentalLabViewModel", "Preference restore failed: ${e.message}")
+      }
+    }
+
+    // Monitor real-time upcoming delivery dates and notify when delivery is due or
+    // overdue (relocated from the first init block — see the note there).
+    viewModelScope.launch {
+      allShipments.collect { shipments ->
+        if (_notificationsEnabled.value && _activeUser.value != null && shipments.isNotEmpty()) {
+          withContext(Dispatchers.Default) {
+            NotificationHelper.checkAndNotifyUpcomingDeliveries(getApplication(), shipments)
+          }
+        }
+      }
+    }
+  }
+
   val recentAuditLogs: StateFlow<List<AuditLog>> = repository.recentAuditLogs
     .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
 
@@ -962,11 +1083,15 @@ class DentalLabViewModel(application: Application) : AndroidViewModel(applicatio
   }.stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
 
   // --- Dashboard Computed Stats ---
+  // FIX: `_currency` added as a combine source so changing the base currency in
+  // Settings immediately re-emits the dashboard totals (previously stale until an
+  // unrelated emission occurred).
   val dashboardStats: StateFlow<DashboardStats> = combine(
     allShipments,
     allPayments,
-    _exchangeRates
-  ) { shipments, payments, rates ->
+    _exchangeRates,
+    _currency
+  ) { shipments, payments, rates, currencyCode ->
     val calendar = Calendar.getInstance()
     calendar.set(Calendar.HOUR_OF_DAY, 0)
     calendar.set(Calendar.MINUTE, 0)
@@ -1002,10 +1127,19 @@ class DentalLabViewModel(application: Application) : AndroidViewModel(applicatio
     val sarStats = calculateCurrencyBalance(AppCurrency.SAR)
     val usdStats = calculateCurrencyBalance(AppCurrency.USD)
 
-    val baseCurr = AppCurrency.fromCode(_currency.value)
+    val baseCurr = AppCurrency.fromCode(currencyCode)
     val totalValuation = rates.convert(yerStats.remainingBalance, AppCurrency.YER, baseCurr) +
       rates.convert(sarStats.remainingBalance, AppCurrency.SAR, baseCurr) +
       rates.convert(usdStats.remainingBalance, AppCurrency.USD, baseCurr)
+
+    // Consolidated billed/paid totals expressed in the CURRENT base currency
+    // (previously hardcoded to SAR regardless of the selected base currency).
+    val totalBilledAll = rates.convert(yerStats.totalBilled, AppCurrency.YER, baseCurr) +
+      rates.convert(sarStats.totalBilled, AppCurrency.SAR, baseCurr) +
+      rates.convert(usdStats.totalBilled, AppCurrency.USD, baseCurr)
+    val totalPaidAll = rates.convert(yerStats.totalPaid, AppCurrency.YER, baseCurr) +
+      rates.convert(sarStats.totalPaid, AppCurrency.SAR, baseCurr) +
+      rates.convert(usdStats.totalPaid, AppCurrency.USD, baseCurr)
 
     DashboardStats(
       totalShipments = totalShipments,
@@ -1019,8 +1153,8 @@ class DentalLabViewModel(application: Application) : AndroidViewModel(applicatio
       yerStats = yerStats,
       sarStats = sarStats,
       usdStats = usdStats,
-      totalBilled = sarStats.totalBilled,
-      totalPaid = sarStats.totalPaid,
+      totalBilled = totalBilledAll,
+      totalPaid = totalPaidAll,
       totalOutstanding = totalValuation,
       baseCurrency = baseCurr
     )

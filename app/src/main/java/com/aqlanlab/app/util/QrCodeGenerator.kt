@@ -8,7 +8,8 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.remember
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.produceState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -19,6 +20,8 @@ import androidx.compose.ui.unit.dp
 import com.google.zxing.BarcodeFormat
 import com.google.zxing.EncodeHintType
 import com.google.zxing.qrcode.QRCodeWriter
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import java.util.EnumMap
 
 object QrCodeGenerator {
@@ -62,8 +65,13 @@ fun QrCodeView(
   size: Dp = 180.dp,
   backgroundColor: Color = Color.White
 ) {
-  val qrBitmap = remember(content) {
-    QrCodeGenerator.generateQrBitmap(content, sizePx = 400)
+  // FIX: QR generation is a 160,000-iteration pixel loop + bitmap allocation and
+  // previously ran synchronously inside `remember` during composition on the main
+  // thread. It now runs on Dispatchers.Default via produceState.
+  val qrBitmap by produceState<Bitmap?>(initialValue = null, content) {
+    value = withContext(Dispatchers.Default) {
+      QrCodeGenerator.generateQrBitmap(content, sizePx = 400)
+    }
   }
 
   Box(
@@ -74,9 +82,10 @@ fun QrCodeView(
       .border(1.dp, Color(0xFFCBD5E1), RoundedCornerShape(12.dp)),
     contentAlignment = Alignment.Center
   ) {
-    if (qrBitmap != null) {
+    val bitmap = qrBitmap
+    if (bitmap != null) {
       Image(
-        bitmap = qrBitmap.asImageBitmap(),
+        bitmap = bitmap.asImageBitmap(),
         contentDescription = "QR Code لملصق الإرسالية: $content",
         modifier = Modifier.size(size - 16.dp)
       )

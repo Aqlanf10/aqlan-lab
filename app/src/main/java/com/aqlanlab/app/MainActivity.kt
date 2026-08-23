@@ -1,6 +1,7 @@
 package com.aqlanlab.app
 
 import android.Manifest
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
@@ -8,7 +9,7 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.foundation.background
+import androidx.activity.viewModels
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
@@ -23,13 +24,14 @@ import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
-import androidx.lifecycle.viewmodel.compose.viewModel
 import com.aqlanlab.app.ui.navigation.MainAppScaffold
 import com.aqlanlab.app.ui.theme.DentalLabTheme
 import com.aqlanlab.app.ui.viewmodel.DentalLabViewModel
 import com.aqlanlab.app.util.NotificationHelper
 
 class MainActivity : ComponentActivity() {
+  private val labViewModel: DentalLabViewModel by viewModels()
+
   private val requestNotificationPermissionLauncher = registerForActivityResult(
     ActivityResultContracts.RequestPermission()
   ) { isGranted: Boolean ->
@@ -40,25 +42,9 @@ class MainActivity : ComponentActivity() {
     super.onCreate(savedInstanceState)
     enableEdgeToEdge()
 
-    try {
-      if (com.google.firebase.FirebaseApp.getApps(this).isEmpty()) {
-        com.google.firebase.FirebaseApp.initializeApp(this)
-      }
-    } catch (e: Throwable) {
-      android.util.Log.w("MainActivity", "FirebaseApp init note: ${e.message}")
-    }
-
-    try {
-      NotificationHelper.init(this)
-    } catch (e: Throwable) {
-      android.util.Log.w("MainActivity", "NotificationHelper init note: ${e.message}")
-    }
-
-    try {
-      com.aqlanlab.app.network.AppCheckManager.initialize(this)
-    } catch (e: Throwable) {
-      android.util.Log.w("MainActivity", "AppCheckManager init note: ${e.message}")
-    }
+    // NOTE: Firebase / AppCheck / NotificationHelper initialization happens once in
+    // AqlanLabApplication.onCreate(); the duplicated (and try/catch-wrapped) copies
+    // that used to live here were removed.
 
     try {
       if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
@@ -70,9 +56,12 @@ class MainActivity : ComponentActivity() {
       android.util.Log.w("MainActivity", "Notification permission note: ${e.message}")
     }
 
-    setContent {
-      val labViewModel: DentalLabViewModel = viewModel()
+    // FIX: notification taps now deep-link into the relevant screen. The extras were
+    // always attached by NotificationHelper but never read, so every tap opened the
+    // Dashboard.
+    handleNotificationIntent(intent)
 
+    setContent {
       DentalLabTheme {
         // Arabic Right-to-Left (RTL) Layout Direction
         CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Rtl) {
@@ -96,6 +85,33 @@ class MainActivity : ComponentActivity() {
           }
         }
       }
+    }
+  }
+
+  override fun onNewIntent(intent: Intent) {
+    super.onNewIntent(intent)
+    handleNotificationIntent(intent)
+  }
+
+  private fun handleNotificationIntent(intent: Intent?) {
+    try {
+      val route = intent?.getStringExtra("NAV_ROUTE") ?: return
+      if (route.isNotBlank()) {
+        labViewModel.queueDeepLinkRoute(route)
+      }
+    } catch (e: Throwable) {
+      android.util.Log.w("MainActivity", "Notification intent handling note: ${e.message}")
+    }
+  }
+
+  override fun onStop() {
+    super.onStop()
+    // Makes the user-visible "قفل التطبيق عند الفتح" setting real: when enabled, the
+    // app requires the PIN/biometric again after returning from the background.
+    try {
+      labViewModel.lockApp()
+    } catch (e: Throwable) {
+      android.util.Log.w("MainActivity", "lockApp note: ${e.message}")
     }
   }
 }

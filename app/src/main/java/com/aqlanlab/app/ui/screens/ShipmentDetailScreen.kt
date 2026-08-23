@@ -35,6 +35,10 @@ import com.aqlanlab.app.ui.theme.*
 import com.aqlanlab.app.ui.viewmodel.DentalLabViewModel
 import com.aqlanlab.app.util.PdfReportGenerator
 import com.aqlanlab.app.util.QrCodeView
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import java.io.File
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -84,6 +88,22 @@ fun ShipmentDetailScreen(
 
   val isLate = DateUtils.isLate(shipment.expectedDeliveryDate, shipment.status)
 
+  // FIX: PDF generation (QR encode + multi-page canvas + file I/O) previously ran
+  // synchronously on the main thread inside click handlers — a guaranteed freeze/ANR
+  // for large reports. It now runs on Dispatchers.IO with the follow-up action back on Main.
+  val pdfScope = rememberCoroutineScope()
+  fun generatePdfAsync(onReady: (File?) -> Unit) {
+    pdfScope.launch(Dispatchers.IO) {
+      val pdfFile = PdfReportGenerator.generateShipmentPdf(
+        context = context,
+        shipment = shipment,
+        userRole = activeUser.role,
+        currency = currency
+      )
+      withContext(Dispatchers.Main) { onReady(pdfFile) }
+    }
+  }
+
   Scaffold(
     topBar = {
       TopAppBar(
@@ -109,16 +129,13 @@ fun ShipmentDetailScreen(
         actions = {
           IconButton(
             onClick = {
-              val pdfFile = PdfReportGenerator.generateShipmentPdf(
-                context = context,
-                shipment = shipment,
-                userRole = activeUser.role,
-                currency = currency
-              )
-              if (pdfFile != null) {
-                PdfReportGenerator.openPdfFile(context, pdfFile)
-              } else {
-                android.widget.Toast.makeText(context, "فشل إنشاء تقرير PDF", android.widget.Toast.LENGTH_SHORT).show()
+              // PDF generation off the main thread (ANR fix)
+              generatePdfAsync { pdfFile ->
+                if (pdfFile != null) {
+                  PdfReportGenerator.openPdfFile(context, pdfFile)
+                } else {
+                  android.widget.Toast.makeText(context, "فشل إنشاء تقرير PDF", android.widget.Toast.LENGTH_SHORT).show()
+                }
               }
             },
             modifier = Modifier.testTag("pdf_report_btn")
@@ -167,7 +184,9 @@ fun ShipmentDetailScreen(
           ) {
             Icon(Icons.Default.Edit, contentDescription = "تعديل")
           }
-          if (activeUser.role == UserRole.ADMIN) {
+          // FIX: the delete button was visible ONLY to ADMIN — not SUPER_ADMIN (the
+          // owner!) — inconsistent with every other screen.
+          if (activeUser.role == UserRole.ADMIN || activeUser.role == UserRole.SUPER_ADMIN) {
             IconButton(
               onClick = { showDeleteDialog = true },
               modifier = Modifier.testTag("delete_shipment_btn")
@@ -647,16 +666,12 @@ fun ShipmentDetailScreen(
             // View / Open PDF
             Button(
               onClick = {
-                val pdfFile = PdfReportGenerator.generateShipmentPdf(
-                  context = context,
-                  shipment = shipment,
-                  userRole = activeUser.role,
-                  currency = currency
-                )
-                if (pdfFile != null) {
-                  PdfReportGenerator.openPdfFile(context, pdfFile)
-                } else {
-                  android.widget.Toast.makeText(context, "فشل إنشاء ملف PDF", android.widget.Toast.LENGTH_SHORT).show()
+                generatePdfAsync { pdfFile ->
+                  if (pdfFile != null) {
+                    PdfReportGenerator.openPdfFile(context, pdfFile)
+                  } else {
+                    android.widget.Toast.makeText(context, "فشل إنشاء ملف PDF", android.widget.Toast.LENGTH_SHORT).show()
+                  }
                 }
               },
               colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary),
@@ -671,14 +686,10 @@ fun ShipmentDetailScreen(
             // Share PDF
             OutlinedButton(
               onClick = {
-                val pdfFile = PdfReportGenerator.generateShipmentPdf(
-                  context = context,
-                  shipment = shipment,
-                  userRole = activeUser.role,
-                  currency = currency
-                )
-                if (pdfFile != null) {
-                  PdfReportGenerator.sharePdfFile(context, pdfFile, title = "مشاركة إرسالية ${shipment.shipmentNumber}")
+                generatePdfAsync { pdfFile ->
+                  if (pdfFile != null) {
+                    PdfReportGenerator.sharePdfFile(context, pdfFile, title = "مشاركة إرسالية ${shipment.shipmentNumber}")
+                  }
                 }
               },
               shape = RoundedCornerShape(10.dp),
@@ -693,14 +704,10 @@ fun ShipmentDetailScreen(
             // Direct Print
             FilledTonalButton(
               onClick = {
-                val pdfFile = PdfReportGenerator.generateShipmentPdf(
-                  context = context,
-                  shipment = shipment,
-                  userRole = activeUser.role,
-                  currency = currency
-                )
-                if (pdfFile != null) {
-                  PdfReportGenerator.printPdf(context, pdfFile, jobName = "Shipment_${shipment.shipmentNumber}")
+                generatePdfAsync { pdfFile ->
+                  if (pdfFile != null) {
+                    PdfReportGenerator.printPdf(context, pdfFile, jobName = "Shipment_${shipment.shipmentNumber}")
+                  }
                 }
               },
               shape = RoundedCornerShape(10.dp),
@@ -947,14 +954,10 @@ fun ShipmentDetailScreen(
           ) {
             Button(
               onClick = {
-                val pdfFile = PdfReportGenerator.generateShipmentPdf(
-                  context = context,
-                  shipment = shipment,
-                  userRole = activeUser.role,
-                  currency = currency
-                )
-                if (pdfFile != null) {
-                  PdfReportGenerator.openPdfFile(context, pdfFile)
+                generatePdfAsync { pdfFile ->
+                  if (pdfFile != null) {
+                    PdfReportGenerator.openPdfFile(context, pdfFile)
+                  }
                 }
                 showVoucherDialog = false
               },
@@ -967,7 +970,7 @@ fun ShipmentDetailScreen(
 
             Button(
               onClick = {
-                val lab = allShipments.firstOrNull()?.let { null }
+                // CLEANUP: removed dead `val lab = allShipments.firstOrNull()?.let { null }`
                 viewModel.sendShipmentToWhatsApp(context, shipment, null)
                 showVoucherDialog = false
               },

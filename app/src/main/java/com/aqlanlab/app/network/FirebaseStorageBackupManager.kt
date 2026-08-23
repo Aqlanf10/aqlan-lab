@@ -2,6 +2,7 @@ package com.aqlanlab.app.network
 
 import android.content.Context
 import android.util.Log
+import androidx.room.withTransaction
 import com.aqlanlab.app.data.AppDatabase
 import com.aqlanlab.app.data.models.User
 import com.google.firebase.FirebaseApp
@@ -102,6 +103,9 @@ class FirebaseStorageBackupManager(
       val latestStoragePath = "backups/$clinicId/latest_backup.json"
 
       // 1. Gather all database records
+      // SECURITY FIX: PIN hashes are stripped from the uploaded backup (previously the
+      // full users table including salted PIN hashes was uploaded to Firebase Storage,
+      // where ADMIN/ACCOUNTANT roles could download and brute-force it offline).
       val payload = CloudBackupPayload(
         clinicId = clinicId,
         clinicName = clinicName,
@@ -115,7 +119,7 @@ class FirebaseStorageBackupManager(
         payments = database.paymentDao().getAllSync(),
         inventoryItems = database.inventoryDao().getAllSync(),
         inventoryTransactions = database.inventoryDao().getAllTransactionsSync(),
-        users = database.userDao().getAllSync()
+        users = database.userDao().getAllSync().map { it.copy(pinCode = "") }
       )
 
       val jsonString = payloadAdapter.toJson(payload)
@@ -296,15 +300,34 @@ class FirebaseStorageBackupManager(
       _statusMessage.value = "جاري استعادة البيانات إلى قاعدة البيانات المحلية..."
       val payload = payloadAdapter.fromJson(jsonContent) ?: throw IllegalStateException("صيغة النسخة الاحتياطية غير صالحة")
 
-      // Apply to Room database
-      if (payload.labs.isNotEmpty()) database.labDao().insertAll(payload.labs)
-      if (payload.workTypes.isNotEmpty()) database.workTypeDao().insertAll(payload.workTypes)
-      if (payload.labPrices.isNotEmpty()) database.labPriceDao().insertAll(payload.labPrices)
-      if (payload.shipments.isNotEmpty()) database.shipmentDao().insertAll(payload.shipments)
-      if (payload.payments.isNotEmpty()) database.paymentDao().insertAll(payload.payments)
-      if (payload.inventoryItems.isNotEmpty()) database.inventoryDao().insertAll(payload.inventoryItems)
-      if (payload.inventoryTransactions.isNotEmpty()) database.inventoryDao().insertAllTransactions(payload.inventoryTransactions)
-      if (payload.users.isNotEmpty()) database.userDao().insertAll(payload.users)
+      // FIX: restore REPLACES the operational data inside a single transaction and
+      // preserves locally stored PIN hashes (backups no longer contain them — see
+      // uploadBackupToStorage). Previously rows were merged without clearing tables,
+      // resurrecting deleted records.
+      database.withTransaction {
+        if (payload.labs.isNotEmpty() || payload.shipments.isNotEmpty()) {
+          database.shipmentDao().deleteAllShipments()
+          database.paymentDao().deleteAllPayments()
+          database.labDao().deleteAllLabs()
+          database.workTypeDao().deleteAllWorkTypes()
+          database.labPriceDao().deleteAllPrices()
+          database.inventoryDao().deleteAllItems()
+          database.inventoryDao().deleteAllTransactions()
+        }
+        if (payload.labs.isNotEmpty()) database.labDao().insertAll(payload.labs)
+        if (payload.workTypes.isNotEmpty()) database.workTypeDao().insertAll(payload.workTypes)
+        if (payload.labPrices.isNotEmpty()) database.labPriceDao().insertAll(payload.labPrices)
+        if (payload.shipments.isNotEmpty()) database.shipmentDao().insertAll(payload.shipments)
+        if (payload.payments.isNotEmpty()) database.paymentDao().insertAll(payload.payments)
+        if (payload.inventoryItems.isNotEmpty()) database.inventoryDao().insertAll(payload.inventoryItems)
+        if (payload.inventoryTransactions.isNotEmpty()) database.inventoryDao().insertAllTransactions(payload.inventoryTransactions)
+        if (payload.users.isNotEmpty()) {
+          val existingPins = database.userDao().getAllSync().associate { it.id to it.pinCode }
+          database.userDao().insertAll(payload.users.map { u ->
+            if (u.pinCode.isBlank()) u.copy(pinCode = existingPins[u.id] ?: "") else u
+          })
+        }
+      }
 
       _backupState.value = SyncState.SUCCESS
       val totalRestored = payload.totalRecordCount
@@ -328,6 +351,11 @@ class FirebaseStorageBackupManager(
     currentUser: User? = null
   ) {
     if (!_isAutoBackupEnabled.value) return
+    // SECURITY FIX: auto-backup (which contains payments/prices) is now restricted to
+    // financial roles. Previously it fired for every role after each change and then
+    // failed against the Storage security rules.
+    val isFinancialUser = currentUser?.role?.canViewFinancials == true
+    if (!isFinancialUser) return
 
     autoBackupJob?.cancel()
     autoBackupJob = coroutineScope.launch {

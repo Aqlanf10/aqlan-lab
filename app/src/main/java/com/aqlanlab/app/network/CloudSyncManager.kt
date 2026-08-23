@@ -4,6 +4,7 @@ import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.util.Log
+import androidx.room.withTransaction
 import com.aqlanlab.app.data.AppDatabase
 import com.aqlanlab.app.data.models.*
 import com.google.firebase.FirebaseApp
@@ -148,7 +149,14 @@ class CloudSyncManager(
   private val _availableSnapshots = MutableStateFlow<List<FirestoreBackupSnapshot>>(emptyList())
   val availableSnapshots: StateFlow<List<FirestoreBackupSnapshot>> = _availableSnapshots.asStateFlow()
 
-  private val _autoSyncEnabled = MutableStateFlow(true)
+  private val _autoSyncEnabled = MutableStateFlow(
+    try {
+      context.getSharedPreferences("aqlan_cloud_sync_prefs", Context.MODE_PRIVATE)
+        .getBoolean("auto_sync_enabled", true)
+    } catch (e: Exception) {
+      true
+    }
+  )
   val autoSyncEnabled: StateFlow<Boolean> = _autoSyncEnabled.asStateFlow()
 
   private val _currentUserEmail = MutableStateFlow<String?>(null)
@@ -156,6 +164,17 @@ class CloudSyncManager(
 
   init {
     checkFirebaseAuthUser()
+    // FIX: keep currentUserEmail fresh — previously read once at construction and
+    // stayed stale/null after sign-in/sign-out.
+    try {
+      if (isFirebaseAvailable()) {
+        FirebaseAuth.getInstance().addAuthStateListener { auth ->
+          _currentUserEmail.value = auth.currentUser?.email
+        }
+      }
+    } catch (e: Exception) {
+      Log.w(TAG, "AuthStateListener not attached: ${e.message}")
+    }
   }
 
   fun checkFirebaseAuthUser() {
@@ -181,6 +200,13 @@ class CloudSyncManager(
 
   fun setAutoSyncEnabled(enabled: Boolean) {
     _autoSyncEnabled.value = enabled
+    // FIX: persist the toggle so it survives app restarts (previously reset to true)
+    try {
+      context.getSharedPreferences("aqlan_cloud_sync_prefs", Context.MODE_PRIVATE)
+        .edit().putBoolean("auto_sync_enabled", enabled).apply()
+    } catch (e: Exception) {
+      Log.w(TAG, "Persist autoSync failed: ${e.message}")
+    }
   }
 
   private fun isFirebaseAvailable(): Boolean {
@@ -210,7 +236,11 @@ class CloudSyncManager(
       payments = database.paymentDao().getAllSync(),
       inventoryItems = database.inventoryDao().getAllSync(),
       inventoryTransactions = database.inventoryDao().getAllTransactionsSync(),
-      users = database.userDao().getAllSync()
+      // SECURITY FIX: PIN hashes are stripped from every cloud/JSON backup payload.
+      // Previously the full users table (including salted PIN hashes) was uploaded to
+      // Firestore/Storage where ADMIN/ACCOUNTANT roles could download it, enabling
+      // offline brute-forcing of 4-6 digit PINs.
+      users = database.userDao().getAllSync().map { it.copy(pinCode = "") }
     )
   }
 
@@ -227,14 +257,35 @@ class CloudSyncManager(
   }
 
   private suspend fun applyPayloadToRoom(payload: CloudBackupPayload) = withContext(Dispatchers.IO) {
-    if (payload.labs.isNotEmpty()) database.labDao().insertAll(payload.labs)
-    if (payload.workTypes.isNotEmpty()) database.workTypeDao().insertAll(payload.workTypes)
-    if (payload.labPrices.isNotEmpty()) database.labPriceDao().insertAll(payload.labPrices)
-    if (payload.shipments.isNotEmpty()) database.shipmentDao().insertAll(payload.shipments)
-    if (payload.payments.isNotEmpty()) database.paymentDao().insertAll(payload.payments)
-    if (payload.inventoryItems.isNotEmpty()) database.inventoryDao().insertAll(payload.inventoryItems)
-    if (payload.inventoryTransactions.isNotEmpty()) database.inventoryDao().insertAllTransactions(payload.inventoryTransactions)
-    if (payload.users.isNotEmpty()) database.userDao().insertAll(payload.users)
+    // FIX: restore now REPLACES the operational data inside a single transaction.
+    // Previously it merged rows (REPLACE by PK) without clearing tables, so restoring
+    // an older backup resurrected records deleted after that backup. Local PIN hashes
+    // are preserved whenever the payload arrives without them (backups are stripped of
+    // PINs for security — see createBackupPayload).
+    database.withTransaction {
+      if (payload.labs.isNotEmpty() || payload.shipments.isNotEmpty()) {
+        database.shipmentDao().deleteAllShipments()
+        database.paymentDao().deleteAllPayments()
+        database.labDao().deleteAllLabs()
+        database.workTypeDao().deleteAllWorkTypes()
+        database.labPriceDao().deleteAllPrices()
+        database.inventoryDao().deleteAllItems()
+        database.inventoryDao().deleteAllTransactions()
+      }
+      if (payload.labs.isNotEmpty()) database.labDao().insertAll(payload.labs)
+      if (payload.workTypes.isNotEmpty()) database.workTypeDao().insertAll(payload.workTypes)
+      if (payload.labPrices.isNotEmpty()) database.labPriceDao().insertAll(payload.labPrices)
+      if (payload.shipments.isNotEmpty()) database.shipmentDao().insertAll(payload.shipments)
+      if (payload.payments.isNotEmpty()) database.paymentDao().insertAll(payload.payments)
+      if (payload.inventoryItems.isNotEmpty()) database.inventoryDao().insertAll(payload.inventoryItems)
+      if (payload.inventoryTransactions.isNotEmpty()) database.inventoryDao().insertAllTransactions(payload.inventoryTransactions)
+      if (payload.users.isNotEmpty()) {
+        val existingPins = database.userDao().getAllSync().associate { it.id to it.pinCode }
+        database.userDao().insertAll(payload.users.map { u ->
+          if (u.pinCode.isBlank()) u.copy(pinCode = existingPins[u.id] ?: "") else u
+        })
+      }
+    }
   }
 
   // --- Primary Sync: Room to Firebase Firestore ---
@@ -287,68 +338,78 @@ class CloudSyncManager(
         )
         clinicDocRef.set(clinicMeta, SetOptions.merge()).await()
 
-        // 3. Batch sync core collections for multi-device live access
-        val batch = firestore.batch()
+        // 3. Batch sync core collections for multi-device live access.
+        // FIX: previously `shipments.take(100)` and `payments.take(50)` silently synced
+        // only a prefix of the data while the UI reported a "full sync". Now every
+        // record is uploaded in Firestore-batch-sized chunks (limit 500 ops per batch).
         val isFinancialUser = currentUser?.role in listOf(UserRole.SUPER_ADMIN, UserRole.ADMIN, UserRole.ACCOUNTANT)
 
-        // Sync Shipments to Firestore operational subcollection (NO FINANCIAL FIELDS)
-        payload.shipments.take(100).forEach { shipment ->
-          val doc = clinicDocRef.collection("shipments").document(shipment.id.toString())
-          val opData = hashMapOf(
-            "id" to shipment.id,
-            "shipmentNumber" to shipment.shipmentNumber,
-            "patientName" to shipment.patientName,
-            "clinicOrDoctorName" to shipment.clinicOrDoctorName,
-            "labId" to shipment.labId,
-            "labName" to shipment.labName,
-            "workTypeName" to shipment.workTypeName,
-            "pieceCount" to shipment.pieceCount,
-            "status" to shipment.status.name,
-            "isUrgent" to shipment.isUrgent,
-            "orderDate" to shipment.orderDate,
-            "expectedDeliveryDate" to shipment.expectedDeliveryDate,
-            "actualReceivedDate" to shipment.actualReceivedDate,
-            "notes" to shipment.notes
-          )
-          batch.set(doc, opData, SetOptions.merge())
+        fun buildOperationalShipmentData(shipment: Shipment): Map<String, Any?> = hashMapOf(
+          "id" to shipment.id,
+          "shipmentNumber" to shipment.shipmentNumber,
+          "patientName" to shipment.patientName,
+          "clinicOrDoctorName" to shipment.clinicOrDoctorName,
+          "labId" to shipment.labId,
+          "labName" to shipment.labName,
+          "workTypeName" to shipment.workTypeName,
+          "pieceCount" to shipment.pieceCount,
+          "status" to shipment.status.name,
+          "isUrgent" to shipment.isUrgent,
+          "orderDate" to shipment.orderDate,
+          "expectedDeliveryDate" to shipment.expectedDeliveryDate,
+          "actualReceivedDate" to shipment.actualReceivedDate,
+          "notes" to shipment.notes
+        )
 
-          // Financial Partition (only for financial roles)
-          if (isFinancialUser) {
-            val finDoc = clinicDocRef.collection("shipment_finance").document(shipment.id.toString())
-            val finData = hashMapOf(
-              "shipmentId" to shipment.id.toString(),
-              "unitPrice" to shipment.unitPrice,
-              "discount" to shipment.discount,
-              "totalPrice" to shipment.totalPrice,
-              "syncedAt" to timestamp
-            )
-            batch.set(finDoc, finData, SetOptions.merge())
+        // Shipments: at most 2 ops per shipment (operational + financial partition)
+        payload.shipments.chunked(200).forEach { chunk ->
+          val batch = firestore.batch()
+          chunk.forEach { shipment ->
+            val doc = clinicDocRef.collection("shipments").document(shipment.id.toString())
+            batch.set(doc, buildOperationalShipmentData(shipment), SetOptions.merge())
+
+            // Financial Partition (only for financial roles)
+            if (isFinancialUser) {
+              val finDoc = clinicDocRef.collection("shipment_finance").document(shipment.id.toString())
+              val finData = hashMapOf(
+                "shipmentId" to shipment.id.toString(),
+                "unitPrice" to shipment.unitPrice,
+                "discount" to shipment.discount,
+                "totalPrice" to shipment.totalPrice,
+                "syncedAt" to timestamp
+              )
+              batch.set(finDoc, finData, SetOptions.merge())
+            }
           }
+          batch.commit().await()
         }
 
-        // Sync Payments to Firestore (Only if financial role)
+        // Payments (only if financial role)
         if (isFinancialUser) {
-          payload.payments.take(50).forEach { payment ->
-            val payDoc = clinicDocRef.collection("payments").document(payment.id.toString())
-            val payData = hashMapOf(
-              "id" to payment.id,
-              "labId" to payment.labId,
-              "labName" to payment.labName,
-              "amount" to payment.amount,
-              "currency" to payment.currency,
-              "paymentDate" to payment.paymentDate,
-              "paymentMethod" to payment.paymentMethod.name,
-              "receiptNumber" to payment.receiptNumber,
-              "notes" to payment.notes
-            )
-            batch.set(payDoc, payData, SetOptions.merge())
+          payload.payments.chunked(400).forEach { chunk ->
+            val batch = firestore.batch()
+            chunk.forEach { payment ->
+              val payDoc = clinicDocRef.collection("payments").document(payment.id.toString())
+              val payData = hashMapOf(
+                "id" to payment.id,
+                "labId" to payment.labId,
+                "labName" to payment.labName,
+                "amount" to payment.amount,
+                "currency" to payment.currency,
+                "paymentDate" to payment.paymentDate,
+                "paymentMethod" to payment.paymentMethod.name,
+                "receiptNumber" to payment.receiptNumber,
+                "notes" to payment.notes
+              )
+              batch.set(payDoc, payData, SetOptions.merge())
+            }
+            batch.commit().await()
           }
         }
 
-        // Sync Labs to Firestore
-        payload.labs.forEach { lab ->
-          val doc = clinicDocRef.collection("labs").document(lab.id.toString())
-          val data = hashMapOf(
+        // Labs + Inventory (1 op per record)
+        val miscRecords = payload.labs.map { lab ->
+          clinicDocRef.collection("labs").document(lab.id.toString()) to hashMapOf(
             "id" to lab.id,
             "name" to lab.name,
             "phone" to lab.phone,
@@ -356,13 +417,8 @@ class CloudSyncManager(
             "managerName" to lab.managerName,
             "status" to lab.status.name
           )
-          batch.set(doc, data, SetOptions.merge())
-        }
-
-        // Sync Inventory Items to Firestore
-        payload.inventoryItems.forEach { item ->
-          val doc = clinicDocRef.collection("inventory").document(item.id.toString())
-          val data = hashMapOf(
+        } + payload.inventoryItems.map { item ->
+          clinicDocRef.collection("inventory").document(item.id.toString()) to hashMapOf(
             "id" to item.id,
             "name" to item.name,
             "category" to item.category,
@@ -374,23 +430,36 @@ class CloudSyncManager(
             "supplierPhone" to item.supplierPhone,
             "location" to item.location
           )
-          batch.set(doc, data, SetOptions.merge())
+        }
+        miscRecords.chunked(450).forEach { chunk ->
+          val batch = firestore.batch()
+          chunk.forEach { (docRef, data) ->
+            batch.set(docRef, data, SetOptions.merge())
+          }
+          batch.commit().await()
         }
 
-        // Commit batch write
-        batch.commit().await()
-
-        // Also store full JSON payload in backup document for rapid 1-click restore
-        val jsonPayload = jsonAdapter.toJson(payload)
-        clinicDocRef.collection("backup_payloads")
-          .document(snapshotId)
-          .set(hashMapOf("jsonData" to jsonPayload, "timestamp" to timestamp))
-          .await()
+        // Also store full JSON payload in backup document for rapid 1-click restore.
+        // FIX: only for financial roles — the payload contains payments/prices and
+        // Firestore rules restrict this collection to financial roles; writing it as a
+        // non-financial user made every sync fail with permission-denied.
+        if (isFinancialUser) {
+          val jsonPayload = jsonAdapter.toJson(payload)
+          clinicDocRef.collection("backup_payloads")
+            .document(snapshotId)
+            .set(hashMapOf("jsonData" to jsonPayload, "timestamp" to timestamp))
+            .await()
+        }
 
         Log.d(TAG, "Successfully pushed Room DB to Firestore: ${payload.totalRecordCount} records.")
       } else {
         // If Firebase is in offline/simulated mode, fallback to REST API / local snapshot
-        performHttpBackup(payload)
+        val httpOk = performHttpBackup(payload)
+        if (!httpOk) {
+          _syncState.value = SyncState.ERROR
+          _syncMessage.value = "تعذر الوصول إلى خادم النسخ الاحتياطي البديل (${_cloudServerUrl.value}). يرجى التحقق من الاتصال."
+          return@withContext false
+        }
       }
 
       _lastSyncTimestamp.value = timestamp
@@ -553,12 +622,16 @@ class CloudSyncManager(
         .post(requestBody)
         .build()
 
+      // FIX: report the REAL outcome. Previously any network exception returned
+      // `true` ("Simulated success"), so the UI showed a successful backup while
+      // nothing had been uploaded — a dangerous false sense of data safety.
       try {
         httpClient.newCall(request).execute().use { response ->
           response.isSuccessful
         }
       } catch (e: Exception) {
-        true // Simulated success for custom endpoints
+        Log.w(TAG, "HTTP backup endpoint unreachable: ${e.message}")
+        false
       }
     } catch (e: Exception) {
       false
